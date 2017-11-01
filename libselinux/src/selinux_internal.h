@@ -59,6 +59,7 @@ hidden_proto(selinux_mkload_policy)
     hidden_proto(security_getenforce)
     hidden_proto(security_setenforce)
     hidden_proto(security_deny_unknown)
+    hidden_proto(security_get_checkreqprot)
     hidden_proto(selinux_boolean_sub)
     hidden_proto(selinux_current_policy_path)
     hidden_proto(selinux_binary_policy_path)
@@ -142,6 +143,38 @@ extern int selinux_page_size hidden;
 		if (pthread_setspecific != NULL)		\
 			pthread_setspecific(KEY, VALUE);	\
 	} while (0)
+
+/* selabel_lookup() is only thread safe if we're compiled with pthreads */
+
+#pragma weak pthread_mutex_init
+#pragma weak pthread_mutex_destroy
+#pragma weak pthread_mutex_lock
+#pragma weak pthread_mutex_unlock
+
+#define __pthread_mutex_init(LOCK, ATTR) 			\
+	do {							\
+		if (pthread_mutex_init != NULL)			\
+			pthread_mutex_init(LOCK, ATTR);		\
+	} while (0)
+
+#define __pthread_mutex_destroy(LOCK) 				\
+	do {							\
+		if (pthread_mutex_destroy != NULL)		\
+			pthread_mutex_destroy(LOCK);		\
+	} while (0)
+
+#define __pthread_mutex_lock(LOCK) 				\
+	do {							\
+		if (pthread_mutex_lock != NULL)			\
+			pthread_mutex_lock(LOCK);		\
+	} while (0)
+
+#define __pthread_mutex_unlock(LOCK) 				\
+	do {							\
+		if (pthread_mutex_unlock != NULL)		\
+			pthread_mutex_unlock(LOCK);		\
+	} while (0)
+
 
 #define SELINUXDIR "/etc/selinux/"
 #define SELINUXCONFIG SELINUXDIR "config"

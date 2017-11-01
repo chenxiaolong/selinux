@@ -38,7 +38,7 @@ typedef struct setab {
 #define N_COLOR		4
 
 #define AUX_RULE_COLOR "color"
-static char *rules[] = { "user", "role", "type", "range" };
+static const char *rules[] = { "user", "role", "type", "range" };
 
 static setab_t *clist[N_COLOR];
 static setab_t *cend[N_COLOR];
@@ -292,7 +292,7 @@ int raw_color(const security_context_t raw, char **color_str) {
 	size_t result_size = (N_COLOR * CHARS_PER_COLOR) + 1;
 	int rc = -1;
 
-	if (!color_str && !*color_str) {
+	if (!color_str || !*color_str) {
 		return -1;
 	}
 

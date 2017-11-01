@@ -1,19 +1,22 @@
 # Installation directories.
 PREFIX ?= $(DESTDIR)/usr
 LIBDIR ?= $(PREFIX)/lib
-BINDIR ?= $(PREFIX)/sbin
+SBINDIR ?= $(PREFIX)/sbin
+LIBSEPOLA ?= $(LIBDIR)/libsepol.a
 
 CFLAGS ?= -Wall
-override CFLAGS += -I../src -I$(PREFIX)/include -D_GNU_SOURCE
-LDLIBS += -L$(LIBDIR) ../src/mcstrans.o ../src/mls_level.o -lselinux -lpcre $(LIBDIR)/libsepol.a
+override CFLAGS += -I../src -D_GNU_SOURCE
+override LDLIBS += -lselinux -lpcre
 
-TARGETS=$(patsubst %.c,%,$(wildcard *.c))
+TARGETS=$(patsubst %.c,%,$(sort $(wildcard *.c)))
 
-all: $(TARGETS) 
+all: $(TARGETS)
+
+$(TARGETS): ../src/mcstrans.o ../src/mls_level.o $(LIBSEPOLA)
 
 install: all
-	-mkdir -p $(BINDIR)
-	install -m 755 $(TARGETS) $(BINDIR)
+	-mkdir -p $(SBINDIR)
+	install -m 755 $(TARGETS) $(SBINDIR)
 
 test:
 	./mlstrans-test-runner.py ../test/*.test

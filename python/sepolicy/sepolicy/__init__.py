@@ -4,6 +4,7 @@
 # Author: Ryan Hallisey <rhallise@redhat.com>
 # Author: Jason Zaman <perfinion@gentoo.org>
 
+import errno
 import selinux
 import setools
 import glob
@@ -99,6 +100,7 @@ local_files = None
 fcdict = None
 methods = []
 all_types = None
+all_types_info = None
 user_types = None
 role_allows = None
 portrecs = None
@@ -113,6 +115,8 @@ bools = None
 all_attributes = None
 booleans = None
 booleans_dict = None
+all_allow_rules = None
+all_transitions = None
 
 
 def get_installed_policy(root="/"):
@@ -168,9 +172,10 @@ def info(setype, name=None):
             q.name = name
 
         return ({
-            'aliases': map(str, x.aliases()),
+            'aliases': list(map(str, x.aliases())),
             'name': str(x),
             'permissive': bool(x.ispermissive),
+            'attributes': list(map(str, x.attributes()))
         } for x in q.results())
 
     elif setype == ROLE:
@@ -180,8 +185,8 @@ def info(setype, name=None):
 
         return ({
             'name': str(x),
-            'roles': map(str, x.expand()),
-            'types': map(str, x.types()),
+            'roles': list(map(str, x.expand())),
+            'types': list(map(str, x.types())),
         } for x in q.results())
 
     elif setype == ATTRIBUTE:
@@ -191,7 +196,7 @@ def info(setype, name=None):
 
         return ({
             'name': str(x),
-            'types': map(str, x.expand()),
+            'types': list(map(str, x.expand())),
         } for x in q.results())
 
     elif setype == PORT:
@@ -203,10 +208,17 @@ def info(setype, name=None):
             elif len(ports) == 1:
                 q.ports = (ports[0], ports[0])
 
+        if _pol.mls:
+            return ({
+                'high': x.ports.high,
+                'protocol': str(x.protocol),
+                'range': str(x.context.range_),
+                'type': str(x.context.type_),
+                'low': x.ports.low,
+            } for x in q.results())
         return ({
             'high': x.ports.high,
             'protocol': str(x.protocol),
-            'range': str(x.context.range_),
             'type': str(x.context.type_),
             'low': x.ports.low,
         } for x in q.results())
@@ -216,11 +228,16 @@ def info(setype, name=None):
         if name:
             q.name = name
 
+        if _pol.mls:
+            return ({
+                'range': str(x.mls_range),
+                'name': str(x),
+                'roles': list(map(str, x.roles)),
+                'level': str(x.mls_level),
+            } for x in q.results())
         return ({
-            'range': str(x.mls_range),
             'name': str(x),
-            'roles': map(str, x.roles),
-            'level': str(x.mls_level),
+            'roles': list(map(str, x.roles)),
         } for x in q.results())
 
     elif setype == BOOLEAN:
@@ -361,17 +378,26 @@ def search(types, seinfo=None):
 def get_conditionals(src, dest, tclass, perm):
     tdict = {}
     tlist = []
-    if dest.endswith("_t"):
-        allows = search([ALLOW], {SOURCE: src, TARGET: dest, CLASS: tclass, PERMS: perm})
-    else:
-        # to include attribute
-        allows = search([ALLOW], {SOURCE: src, CLASS: tclass, PERMS: perm})
-        for i in allows:
-            if i['target'] == dest:
-                allows = []
-                allows.append(i)
+    src_list = [src]
+    dest_list = [dest]
+    # add assigned attributes
     try:
-        for i in map(lambda y: (y), filter(lambda x: set(perm).issubset(x[PERMS]) and x['boolean'], allows)):
+        src_list += list(filter(lambda x: x['name'] == src, get_all_types_info()))[0]['attributes']
+    except:
+        pass
+    try:
+        dest_list += list(filter(lambda x: x['name'] == dest, get_all_types_info()))[0]['attributes']
+    except:
+        pass
+    allows = map(lambda y: y, filter(lambda x:
+                x['source'] in src_list and
+                x['target'] in dest_list and
+                set(perm).issubset(x[PERMS]) and
+                'boolean' in x,
+                get_all_allow_rules()))
+
+    try:
+        for i in allows:
             tdict.update({'source': i['source'], 'boolean': i['boolean']})
             if tdict not in tlist:
                 tlist.append(tdict)
@@ -383,7 +409,12 @@ def get_conditionals(src, dest, tclass, perm):
 
 
 def get_conditionals_format_text(cond):
-    enabled = len(filter(lambda x: x['boolean'][0][1], cond)) > 0
+
+    enabled = False
+    for x in cond:
+        if x['boolean'][0][1]:
+            enabled = True
+            break
     return _("-- Allowed %s [ %s ]") % (enabled, " || ".join(set(map(lambda x: "%s=%d" % (x['boolean'][0][0], x['boolean'][0][1]), cond))))
 
 
@@ -465,7 +496,7 @@ def find_file(reg):
 
     try:
         pat = re.compile(r"%s$" % reg)
-        return filter(pat.match, map(lambda x: path + x, os.listdir(path)))
+        return [x for x in map(lambda x: path + x, os.listdir(path)) if pat.match(x)]
     except:
         return []
 
@@ -493,12 +524,15 @@ def find_entrypoint_path(exe, exclude_list=[]):
 
 
 def read_file_equiv(edict, fc_path, modify):
-    fd = open(fc_path, "r")
-    fc = fd.readlines()
-    fd.close()
-    for e in fc:
-        f = e.split()
-        edict[f[0]] = {"equiv": f[1], "modify": modify}
+    try:
+        with open(fc_path, "r") as fd:
+            for e in fd:
+                f = e.split()
+                if f and not f[0].startswith('#'):
+                    edict[f[0]] = {"equiv": f[1], "modify": modify}
+    except OSError as e:
+        if e.errno != errno.ENOENT:
+            raise
     return edict
 
 
@@ -525,9 +559,13 @@ def get_local_file_paths(fc_path=selinux.selinux_file_context_path()):
     if local_files:
         return local_files
     local_files = []
-    fd = open(fc_path + ".local", "r")
-    fc = fd.readlines()
-    fd.close()
+    try:
+        with open(fc_path + ".local", "r") as fd:
+            fc = fd.readlines()
+    except OSError as e:
+        if e.errno != errno.ENOENT:
+            raise
+        return []
     for i in fc:
         rec = i.split()
         if len(rec) == 0:
@@ -555,9 +593,12 @@ def get_fcdict(fc_path=selinux.selinux_file_context_path()):
     fc += fd.readlines()
     fd.close()
     fcdict = {}
-    fd = open(fc_path + ".local", "r")
-    fc += fd.readlines()
-    fd.close()
+    try:
+        with open(fc_path + ".local", "r") as fd:
+            fc += fd.readlines()
+    except OSError as e:
+        if e.errno != errno.ENOENT:
+            raise
 
     for i in fc:
         rec = i.split()
@@ -589,7 +630,7 @@ def get_fcdict(fc_path=selinux.selinux_file_context_path()):
 
 def get_transitions_into(setype):
     try:
-        return filter(lambda x: x["transtype"] == setype, search([TRANSITION], {'class': 'process'}))
+        return [x for x in search([TRANSITION], {'class': 'process'}) if x["transtype"] == setype]
     except (TypeError, AttributeError):
         pass
     return None
@@ -605,7 +646,7 @@ def get_transitions(setype):
 
 def get_file_transitions(setype):
     try:
-        return filter(lambda x: x['class'] != "process", search([TRANSITION], {'source': setype}))
+        return [x for x in search([TRANSITION], {'source': setype}) if x['class'] != "process"]
     except (TypeError, AttributeError):
         pass
     return None
@@ -663,6 +704,23 @@ def get_init_entrypoint(transtype):
 
     return entrypoints
 
+def get_init_entrypoints_str():
+    q = setools.TERuleQuery(_pol,
+                            ruletype=["type_transition"],
+                            source="init_t",
+                            tclass=["process"])
+    entrypoints = {}
+    for i in q.results():
+        try:
+            transtype = str(i.default)
+            if transtype in entrypoints:
+                entrypoints[transtype].append(str(i.target))
+            else:
+                entrypoints[transtype] = [str(i.target)]
+        except AttributeError:
+            continue
+
+    return entrypoints
 
 def get_init_entrypoint_target(entrypoint):
     try:
@@ -711,6 +769,11 @@ def get_all_types():
         all_types = [x['name'] for x in info(TYPE)]
     return all_types
 
+def get_all_types_info():
+    global all_types_info
+    if all_types_info is None:
+        all_types_info = list(info(TYPE))
+    return all_types_info
 
 def get_user_types():
     global user_types
@@ -725,7 +788,7 @@ def get_all_role_allows():
         return role_allows
     role_allows = {}
 
-    q = setools.RBACRuleQuery(_pol, ruletype='allow')
+    q = setools.RBACRuleQuery(_pol, ruletype=[ALLOW])
     for r in q.results():
         src = str(r.source)
         tgt = str(r.target)
@@ -816,8 +879,9 @@ def get_selinux_users():
     global selinux_user_list
     if not selinux_user_list:
         selinux_user_list = list(info(USER))
-        for x in selinux_user_list:
-            x['range'] = "".join(x['range'].split(" "))
+        if _pol.mls:
+            for x in selinux_user_list:
+                x['range'] = "".join(x['range'].split(" "))
     return selinux_user_list
 
 
@@ -915,7 +979,7 @@ def get_description(f, markup=markup):
     if f.endswith("_db_t"):
         return txt + "treat the files as %s database content." % prettyprint(f, "_db_t")
     if f.endswith("_ra_content_t"):
-        return txt + "treat the files as %s read/append content." % prettyprint(f, "_ra_conten_t")
+        return txt + "treat the files as %s read/append content." % prettyprint(f, "_ra_content_t")
     if f.endswith("_cert_t"):
         return txt + "treat the files as %s certificate data." % prettyprint(f, "_cert_t")
     if f.endswith("_key_t"):
@@ -995,12 +1059,23 @@ def gen_short_name(setype):
         short_name = domainname + "_"
     return (domainname, short_name)
 
+def get_all_allow_rules():
+    global all_allow_rules
+    if not all_allow_rules:
+        all_allow_rules = search([ALLOW])
+    return all_allow_rules
+
+def get_all_transitions():
+    global all_transitions
+    if not all_transitions:
+        all_transitions = list(search([TRANSITION]))
+    return all_transitions
 
 def get_bools(setype):
     bools = []
     domainbools = []
     domainname, short_name = gen_short_name(setype)
-    for i in map(lambda x: x['boolean'], filter(lambda x: 'boolean' in x, search([ALLOW], {'source': setype}))):
+    for i in map(lambda x: x['boolean'], filter(lambda x: 'boolean' in x and x['source'] == setype, get_all_allow_rules())):
         for b in i:
             if not isinstance(b, tuple):
                 continue

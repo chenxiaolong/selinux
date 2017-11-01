@@ -6,12 +6,12 @@ ETCDIR ?= $(DESTDIR)/etc
 LIBDIR ?= $(PREFIX)/lib
 
 CFLAGS ?= -Werror -Wall -W
-override CFLAGS += -I$(PREFIX)/include -D_FILE_OFFSET_BITS=64
-LDLIBS = -lselinux -L$(LIBDIR)
+override CFLAGS += -D_FILE_OFFSET_BITS=64
+override LDLIBS += -lselinux
 
 all: sestatus
 
-sestatus:  sestatus.o 
+sestatus: sestatus.o
 
 install: all
 	[ -d $(MANDIR)/man8 ] || mkdir -p $(MANDIR)/man8
@@ -24,7 +24,7 @@ install: all
 	install -m 644 sestatus.conf $(ETCDIR)
 
 clean:
-	rm -f sestatus *.o 
+	rm -f sestatus *.o
 
 indent:
 	../../scripts/Lindent $(wildcard *.[ch])

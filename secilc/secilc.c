@@ -41,7 +41,7 @@
 #endif
 #include <sepol/policydb.h>
 
-void usage(char *prog)
+static __attribute__((__noreturn__)) void usage(const char *prog)
 {
 	printf("Usage: %s [OPTION]... FILE...\n", prog);
 	printf("\n");
@@ -63,7 +63,11 @@ void usage(char *prog)
 	printf("                                 statement if present in the policy\n");
 	printf("  -D, --disable-dontaudit        do not add dontaudit rules to the binary policy\n");
 	printf("  -P, --preserve-tunables        treat tunables as booleans\n");
+	printf("  -m, --multiple-decls           allow some statements to be re-declared\n");
 	printf("  -N, --disable-neverallow       do not check neverallow rules\n");
+	printf("  -G, --expand-generated         Expand and remove auto-generated attributes\n");
+	printf("  -X, --expand-size <SIZE>       Expand type attributes with fewer than <SIZE>\n");
+	printf("                                 members.\n");
 	printf("  -v, --verbose                  increment verbosity level\n");
 	printf("  -h, --help                     display usage information\n");
 	exit(1);
@@ -86,10 +90,13 @@ int main(int argc, char *argv[])
 	int target = SEPOL_TARGET_SELINUX;
 	int mls = -1;
 	int disable_dontaudit = 0;
+	int multiple_decls = 0;
 	int disable_neverallow = 0;
 	int preserve_tunables = 0;
 	int handle_unknown = -1;
 	int policyvers = POLICYDB_VERSION_MAX;
+	int attrs_expand_generated = 0;
+	int attrs_expand_size = -1;
 	int opt_char;
 	int opt_index = 0;
 	char *fc_buf = NULL;
@@ -103,16 +110,19 @@ int main(int argc, char *argv[])
 		{"policyversion", required_argument, 0, 'c'},
 		{"handle-unknown", required_argument, 0, 'U'},
 		{"disable-dontaudit", no_argument, 0, 'D'},
+		{"multiple-decls", no_argument, 0, 'm'},
 		{"disable-neverallow", no_argument, 0, 'N'},
 		{"preserve-tunables", no_argument, 0, 'P'},
 		{"output", required_argument, 0, 'o'},
 		{"filecontexts", required_argument, 0, 'f'},
+		{"expand-generated", no_argument, 0, 'G'},
+		{"expand-size", required_argument, 0, 'X'},
 		{0, 0, 0, 0}
 	};
 	int i;
 
 	while (1) {
-		opt_char = getopt_long(argc, argv, "o:f:U:hvt:M:PDNc:", long_opts, &opt_index);
+		opt_char = getopt_long(argc, argv, "o:f:U:hvt:M:PDmNc:GX:", long_opts, &opt_index);
 		if (opt_char == -1) {
 			break;
 		}
@@ -168,6 +178,9 @@ int main(int argc, char *argv[])
 			case 'D':
 				disable_dontaudit = 1;
 				break;
+			case 'm':
+				multiple_decls = 1;
+				break;
 			case 'N':
 				disable_neverallow = 1;
 				break;
@@ -180,6 +193,24 @@ int main(int argc, char *argv[])
 			case 'f':
 				filecontexts = strdup(optarg);
 				break;
+			case 'G':
+				attrs_expand_generated = 1;
+				break;
+			case 'X': {
+				char *endptr = NULL;
+				errno = 0;
+				attrs_expand_size = strtol(optarg, &endptr, 10);
+				if (errno != 0 || endptr == optarg || *endptr != '\0') {
+					fprintf(stderr, "Bad attribute expand size: %s\n", optarg);
+					usage(argv[0]);
+				}
+
+				if (attrs_expand_size < 0) {
+					fprintf(stderr, "Attribute expand size must be > 0\n");
+					usage(argv[0]);
+				}
+				break;
+			}
 			case 'h':
 				usage(argv[0]);
 			case '?':
@@ -198,6 +229,7 @@ int main(int argc, char *argv[])
 
 	cil_db_init(&db);
 	cil_set_disable_dontaudit(db, disable_dontaudit);
+	cil_set_multiple_decls(db, multiple_decls);
 	cil_set_disable_neverallow(db, disable_neverallow);
 	cil_set_preserve_tunables(db, preserve_tunables);
 	if (handle_unknown != -1) {
@@ -210,6 +242,10 @@ int main(int argc, char *argv[])
 	cil_set_mls(db, mls);
 	cil_set_target_platform(db, target);
 	cil_set_policy_version(db, policyvers);
+	cil_set_attrs_expand_generated(db, attrs_expand_generated);
+	if (attrs_expand_size >= 0) {
+		cil_set_attrs_expand_size(db, (unsigned)attrs_expand_size);
+	}
 
 	for (i = optind; i < argc; i++) {
 		file = fopen(argv[i], "r");

@@ -69,8 +69,14 @@ enabled = [_("No"), _("Yes")]
 action = [_("Disable"), _("Enable")]
 
 
-def compare(a, b):
-    return cmp(a.lower(), b.lower())
+def cmp(a, b):
+    if a is None and b is None:
+        return 0
+    if a is None:
+        return -1
+    if b is None:
+        return 1
+    return (a > b) - (a < b)
 
 import distutils.sysconfig
 ADVANCED_LABEL = (_("Advanced >>"), _("Advanced <<"))
@@ -112,18 +118,13 @@ class SELinuxGui():
 
     def __init__(self, app=None, test=False):
         self.finish_init = False
+        self.advanced_init = True
         self.opage = START_PAGE
         self.dbus = SELinuxDBus()
         try:
             customized = self.dbus.customized()
         except dbus.exceptions.DBusException as e:
             print(e)
-            self.quit()
-
-        sepolicy_domains = sepolicy.get_all_domains()
-        sepolicy_domains.sort(compare)
-        if app and app not in sepolicy_domains:
-            self.error(_("%s is not a valid domain" % app))
             self.quit()
 
         self.init_cur()
@@ -149,7 +150,7 @@ class SELinuxGui():
         self.files_add = False
         self.network_add = False
 
-        self.all_list = []
+        self.all_domains = []
         self.installed_list = []
         self.previously_modified = {}
 
@@ -161,10 +162,10 @@ class SELinuxGui():
         self.invalid_entry = False
         # Advanced search window ****************************
         self.advanced_search_window = builder.get_object("advanced_search_window")
-        self.advanced_search_liststore = builder.get_object("Advanced_search_liststore")
-        self.advanced_search_liststore.set_sort_column_id(0, Gtk.SortType.ASCENDING)
         self.advanced_search_filter = builder.get_object("advanced_filter")
         self.advanced_search_filter.set_visible_func(self.filter_the_data)
+        self.advanced_search_sort = builder.get_object("advanced_sort")
+
         self.advanced_filter_entry = builder.get_object("advanced_filter_entry")
         self.advanced_search_treeview = builder.get_object("advanced_search_treeview")
         self.advanced_search = False
@@ -433,12 +434,10 @@ class SELinuxGui():
 
         # Combobox and Entry items **************************
         self.combobox_menu = builder.get_object("combobox_org")                    # This is the combobox box object, aka the arrow next to the entry text bar
-        self.combobox_menu_model = builder.get_object("application_liststore")
+        self.application_liststore = builder.get_object("application_liststore")
         self.completion_entry = builder.get_object("completion_entry")  # self.combobox_menu.get_child()
-        self.completion_entry_model = builder.get_object("application_liststore")
         self.entrycompletion_obj = builder.get_object("entrycompletion_obj")
         #self.entrycompletion_obj = Gtk.EntryCompletion()
-        self.entrycompletion_obj.set_model(self.completion_entry_model)
         self.entrycompletion_obj.set_minimum_key_length(0)
         self.entrycompletion_obj.set_text_column(0)
         self.entrycompletion_obj.set_match_func(self.match_func, None)
@@ -493,37 +492,41 @@ class SELinuxGui():
         self.loading = 1
         path = None
         if test:
-            domains = ["httpd_t", "abrt_t"]
-            if app and app not in domains:
-                domains.append(app)
+            self.all_domains = ["httpd_t", "abrt_t"]
+            if app and app not in self.all_domains:
+                self.all_domains.append(app)
         else:
-            domains = sepolicy_domains
-            loading_gui.show()
-        length = len(domains)
-        for domain in domains:
+            self.all_domains = sepolicy.get_all_domains()
+        self.all_domains.sort(key=str.lower)
+
+        if app and app not in self.all_domains:
+            self.error(_("%s is not a valid domain" % app))
+            self.quit()
+
+        loading_gui.show()
+        length = len(self.all_domains)
+
+        entrypoint_dict = sepolicy.get_init_entrypoints_str()
+        for domain in self.all_domains:
             # After the user selects a path in the drop down menu call
             # get_init_entrypoint_target(entrypoint) to get the transtype
             # which will give you the application
-            self.combo_box_initialize(domain, None)
-            self.advanced_search_initialize(domain)
-            self.all_list.append(domain)
+            self.combo_box_add(domain, domain)
             self.percentage = float(float(self.loading) / float(length))
             self.progress_bar.set_fraction(self.percentage)
             self.progress_bar.set_pulse_step(self.percentage)
             self.idle_func()
 
-            entrypoint = sepolicy.get_init_entrypoint(domain)
-            if entrypoint:
+            for entrypoint in entrypoint_dict.get(domain, []):
                 path = sepolicy.find_entrypoint_path(entrypoint)
                 if path:
-                    self.combo_box_initialize(path, None)
-                    # Adds all files entrypoint paths that exists on disc
-                    # into the combobox
-                    self.advanced_search_initialize(path)
+                    self.combo_box_add(path, domain)
                     self.installed_list.append(path)
 
             self.loading += 1
         loading_gui.hide()
+        self.entrycompletion_obj.set_model(self.application_liststore)
+        self.advanced_search_treeview.set_model(self.advanced_search_sort)
 
         dic = {
             "on_combo_button_clicked": self.open_combo_menu,
@@ -555,7 +558,7 @@ class SELinuxGui():
             "on_file_equiv_button_clicked": self.show_file_equiv_page,
             "on_app/system_button_clicked": self.system_interface,
             "on_app/users_button_clicked": self.users_interface,
-            "on_main_advanced_label_button_press_event": self.advanced_label_main,
+            "on_show_advanced_search_window": self.on_show_advanced_search_window,
 
             "on_Show_mislabeled_files_toggled": self.show_mislabeled_files,
             "on_Browse_button_files_clicked": self.browse_for_files,
@@ -571,8 +574,6 @@ class SELinuxGui():
             "on_advanced_filter_entry_changed": self.get_advanced_filter_data,
             "on_advanced_search_treeview_row_activated": self.advanced_item_selected,
             "on_Select_advanced_search_clicked": self.advanced_item_button_push,
-            "on_All_advanced_button_toggled": self.advanced_radio_select,
-            "on_Installed_advanced_button_toggled": self.advanced_radio_select,
             "on_info_button_button_press_event": self.on_help_button,
             "on_back_button_clicked": self.on_help_back_clicked,
             "on_forward_button_clicked": self.on_help_forward_clicked,
@@ -678,9 +679,9 @@ class SELinuxGui():
         self.module_dict = {}
         for m in self.dbus.semodule_list().split("\n"):
             mod = m.split()
-            if len(mod) < 2:
+            if len(mod) < 3:
                 continue
-            self.module_dict[mod[0]] = {"version": mod[1], "Disabled": (len(mod) > 2)}
+            self.module_dict[mod[1]] = { "priority": mod[0], "Disabled" : (len(mod) > 3) }
 
         self.enable_unconfined_button.set_active(not self.module_dict["unconfined"]["Disabled"])
         self.enable_permissive_button.set_active(not self.module_dict["permissivedomains"]["Disabled"])
@@ -713,7 +714,7 @@ class SELinuxGui():
 
     def match_func(self, completion, key_string, iter, func_data):
         try:
-            if self.combobox_menu_model.get_value(iter, 0).find(key_string) != -1:
+            if self.application_liststore.get_value(iter, 0).find(key_string) != -1:
                 return True
             return False
         except AttributeError:
@@ -836,8 +837,7 @@ class SELinuxGui():
             self.enforce_button = self.disabled_button_default
 
     def populate_system_policy(self):
-        selinux_path = selinux.selinux_path()
-        types = map(lambda x: x[1], filter(lambda x: x[0] == selinux_path, os.walk(selinux_path)))[0]
+        types = next(os.walk(selinux.selinux_path(), topdown=True))[1]
         types.sort()
         ctr = 0
         for item in types:
@@ -907,8 +907,8 @@ class SELinuxGui():
             if "object_r" in roles:
                 roles.remove("object_r")
             self.user_liststore.set_value(iter, 1, ", ".join(roles))
-            self.user_liststore.set_value(iter, 2, u["level"])
-            self.user_liststore.set_value(iter, 3, u["range"])
+            self.user_liststore.set_value(iter, 2, u.get("level", ""))
+            self.user_liststore.set_value(iter, 3, u.get("range", ""))
             self.user_liststore.set_value(iter, 4, True)
         self.ready_mouse()
 
@@ -924,11 +924,11 @@ class SELinuxGui():
         self.ready_mouse()
 
     def network_initialize(self, app):
-        netd = sepolicy.network.get_network_connect(app, "tcp", "name_connect")
+        netd = sepolicy.network.get_network_connect(app, "tcp", "name_connect", check_bools=True)
         self.net_update(app, netd, "tcp", OUTBOUND_PAGE, self.network_out_liststore)
-        netd = sepolicy.network.get_network_connect(app, "tcp", "name_bind")
+        netd = sepolicy.network.get_network_connect(app, "tcp", "name_bind", check_bools=True)
         self.net_update(app, netd, "tcp", INBOUND_PAGE, self.network_in_liststore)
-        netd = sepolicy.network.get_network_connect(app, "udp", "name_bind")
+        netd = sepolicy.network.get_network_connect(app, "udp", "name_bind", check_bools=True)
         self.net_update(app, netd, "udp", INBOUND_PAGE, self.network_in_liststore)
 
     def network_initial_data_insert(self, model, ports, portType, protocol):
@@ -964,12 +964,12 @@ class SELinuxGui():
         iter = liststore.get_iter(index)
         return liststore.get_value(iter, 0)
 
-    def combo_box_initialize(self, val, desc):
+    def combo_box_add(self, val, val1):
         if val is None:
             return
-        iter = self.combobox_menu_model.append()
-        for f in val:
-            self.combobox_menu_model.set_value(iter, 0, val)
+        iter = self.application_liststore.append()
+        self.application_liststore.set_value(iter, 0, val)
+        self.application_liststore.set_value(iter, 1, val1)
 
     def select_type_more(self, *args):
         app = self.moreTypes_treeview.get_selection()
@@ -985,19 +985,18 @@ class SELinuxGui():
         model, iter = row.get_selected()
         iter = model.convert_iter_to_child_iter(iter)
         iter = self.advanced_search_filter.convert_iter_to_child_iter(iter)
-        app = self.advanced_search_liststore.get_value(iter, 1)
+        app = self.application_liststore.get_value(iter, 1)
         if app is None:
             return
         self.advanced_filter_entry.set_text('')
         self.advanced_search_window.hide()
         self.reveal_advanced(self.main_advanced_label)
         self.completion_entry.set_text(app)
-        self.application_selected()
 
     def advanced_item_selected(self, treeview, path, *args):
         iter = self.advanced_search_filter.get_iter(path)
         iter = self.advanced_search_filter.convert_iter_to_child_iter(iter)
-        app = self.advanced_search_liststore.get_value(iter, 1)
+        app = self.application_liststore.get_value(iter, 1)
         self.advanced_filter_entry.set_text('')
         self.advanced_search_window.hide()
         self.reveal_advanced(self.main_advanced_label)
@@ -1006,7 +1005,7 @@ class SELinuxGui():
 
     def find_application(self, app):
         if app and len(app) > 0:
-            for items in self.combobox_menu_model:
+            for items in self.application_liststore:
                 if app == items[0]:
                     return True
         return False
@@ -1068,9 +1067,9 @@ class SELinuxGui():
         self.transitions_into_tab.set_label(_("Application Transitions Into '%s'" % app))
         self.transitions_from_tab.set_label(_("Application Transitions From '%s'" % app))
         self.transitions_file_tab.set_label(_("File Transitions From '%s'" % app))
-        self.transitions_into_tab.set_tooltip_text(_("Executables which will transition to the '%s', when executing a selected domains entrypoint.") % app)
-        self.transitions_from_tab.set_tooltip_text(_("Executables which will transition to a different domain, when the '%s' executes them.") % app)
-        self.transitions_file_tab.set_tooltip_text(_("Files by '%s' will transitions to a different label." % app))
+        self.transitions_into_tab.set_tooltip_text(_("Executables which will transition to '%s', when executing selected domains entrypoint.") % app)
+        self.transitions_from_tab.set_tooltip_text(_("Executables which will transition to a different domain, when '%s' executes them.") % app)
+        self.transitions_file_tab.set_tooltip_text(_("Files by '%s' with transitions to a different label." % app))
         self.transitions_radio_button.set_tooltip_text(_("Display applications that can transition into or out of the '%s'." % app))
 
         self.application = app
@@ -1292,11 +1291,11 @@ class SELinuxGui():
             niter = self.transitions_from_treestore.append(iter)
             # active[0][1] is either T or F (enabled is all the way at the top)
             self.transitions_from_treestore.set_value(iter, 0, enabled[active[0][1]])
-            markup = '<span foreground="blue"><u>%s</u></span>'
+            markup = ('<span foreground="blue"><u>','</u></span>')
             if active[0][1]:
-                self.transitions_from_treestore.set_value(niter, 2, (_("To disable this transition, go to the " + markup % _("Boolean section."))))
+                self.transitions_from_treestore.set_value(niter, 2, (_("To disable this transition, go to the %sBoolean section%s.") % markup))
             else:
-                self.transitions_from_treestore.set_value(niter, 2, (_("To enable this transition, go to the " + markup % _("Boolean section."))))
+                self.transitions_from_treestore.set_value(niter, 2, (_("To enable this transition, go to the %sBoolean section%s.") % markup))
 
             # active[0][0] is the Bool Name
             self.transitions_from_treestore.set_value(niter, 1, active[0][0])
@@ -1379,8 +1378,8 @@ class SELinuxGui():
                 self.treeview = self.network_in_treeview
                 category = _("listen for inbound connections")
 
-            self.add_button.set_tooltip_text(_("Add new port definition to which the '%(APP)s' domain is allowed to %s.") % {"APP": self.application, "PERM": category})
-            self.delete_button.set_tooltip_text(_("Delete modified port definitions to which the '%(APP)s' domain is allowed to %s.") % {"APP": self.application, "PERM": category})
+            self.add_button.set_tooltip_text(_("Add new port definition to which the '%(APP)s' domain is allowed to %(PERM)s.") % {"APP": self.application, "PERM": category})
+            self.delete_button.set_tooltip_text(_("Delete modified port definitions to which the '%(APP)s' domain is allowed to %(PERM)s.") % {"APP": self.application, "PERM": category})
             self.modify_button.set_tooltip_text(_("Modify port definitions to which the '%(APP)s' domain is allowed to %(PERM)s.") % {"APP": self.application, "PERM": category})
 
         if self.transitions_radio_button.get_active():
@@ -1600,8 +1599,8 @@ class SELinuxGui():
             self.show_popup(self.login_popup_window)
 
         if self.opage == FILE_EQUIV_PAGE:
-            self.file_equiv_source_entry.set_text(self.file_equiv_liststore.get_value(iter, 0))
-            self.file_equiv_dest_entry.set_text(self.file_equiv_liststore.get_value(iter, 1))
+            self.file_equiv_source_entry.set_text(self.unmarkup(self.file_equiv_liststore.get_value(iter, 0)))
+            self.file_equiv_dest_entry.set_text(self.unmarkup(self.file_equiv_liststore.get_value(iter, 1)))
             self.file_equiv_label.set_text((_("Modify File Equivalency Mapping. Mapping will be created when update is applied.")))
             self.file_equiv_popup_window.set_title(_("Modify SELinux File Equivalency"))
             self.clear_entry = True
@@ -1637,7 +1636,7 @@ class SELinuxGui():
         self.files_type_combolist.clear()
         self.files_class_combolist.clear()
         compare = self.strip_domain(self.application)
-        for d in self.completion_entry_model:
+        for d in self.application_liststore:
             if d[0].startswith(compare) and d[0] != self.application and not d[0].startswith("httpd_sys"):
                 exclude_list.append(self.strip_domain(d[0]))
 
@@ -1716,10 +1715,10 @@ class SELinuxGui():
 
         try:
             if ipage == OUTBOUND_PAGE:
-                netd = sepolicy.network.get_network_connect(self.application, "tcp", "name_connect")
+                netd = sepolicy.network.get_network_connect(self.application, "tcp", "name_connect", check_bools=True)
             elif ipage == INBOUND_PAGE:
-                netd = sepolicy.network.get_network_connect(self.application, "tcp", "name_bind")
-                netd += sepolicy.network.get_network_connect(self.application, "udp", "name_bind")
+                netd = sepolicy.network.get_network_connect(self.application, "tcp", "name_bind", check_bools=True)
+                netd += sepolicy.network.get_network_connect(self.application, "udp", "name_bind", check_bools=True)
 
             port_types = []
             for k in netd.keys():
@@ -1756,14 +1755,14 @@ class SELinuxGui():
         if self.login_mls_entry.get_text() == "":
             for u in sepolicy.get_selinux_users():
                 if seuser == u['name']:
-                    self.login_mls_entry.set_text(u['range'])
+                    self.login_mls_entry.set_text(u.get('range', ''))
 
     def user_roles_combobox_change(self, combo, *args):
         serole = self.combo_get_active_text(combo)
         if self.user_mls_entry.get_text() == "":
             for u in sepolicy.get_all_roles():
                 if serole == u['name']:
-                    self.user_mls_entry.set_text(u['range'])
+                    self.user_mls_entry.set_text(u.get('range', ''))
 
     def get_selected_iter(self):
         iter = None
@@ -1974,7 +1973,10 @@ class SELinuxGui():
             self.cur_dict["user"][name] = {"action": "-m", "range": mls_range, "level": level, "role": roles, "oldrange": oldrange, "oldlevel": oldlevel, "oldroles": oldroles, "oldname": oldname}
         else:
             iter = self.liststore.append(None)
-            self.cur_dict["user"][name] = {"action": "-a", "range": mls_range, "level": level, "role": roles}
+            if mls_range or level:
+                self.cur_dict["user"][name] = {"action": "-a", "range": mls_range, "level": level, "role": roles}
+            else:
+                self.cur_dict["user"][name] = {"action": "-a", "role": roles}
 
         self.liststore.set_value(iter, 0, name)
         self.liststore.set_value(iter, 1, roles)
@@ -2090,8 +2092,8 @@ class SELinuxGui():
             user_dict = self.cust_dict["user"]
             for user in user_dict:
                 roles = user_dict[user]["role"]
-                mls = user_dict[user]["range"]
-                level = user_dict[user]["level"]
+                mls = user_dict[user].get("range", "")
+                level = user_dict[user].get("level", "")
                 iter = self.user_delete_liststore.append()
                 self.user_delete_liststore.set_value(iter, 1, user)
                 self.user_delete_liststore.set_value(iter, 2, roles)
@@ -2105,7 +2107,7 @@ class SELinuxGui():
             login_dict = self.cust_dict["login"]
             for login in login_dict:
                 seuser = login_dict[login]["seuser"]
-                mls = login_dict[login]["range"]
+                mls = login_dict[login].get("range", "")
                 iter = self.login_delete_liststore.append()
                 self.login_delete_liststore.set_value(iter, 1, seuser)
                 self.login_delete_liststore.set_value(iter, 2, login)
@@ -2269,7 +2271,7 @@ class SELinuxGui():
             self.update_treestore.set_value(niter, 3, False)
             roles = self.cur_dict["user"][user]["role"]
             self.update_treestore.set_value(niter, 1, (_("Roles: %s")) % roles)
-            mls = self.cur_dict["user"][user]["range"]
+            mls = self.cur_dict["user"][user].get("range", "")
             niter = self.update_treestore.append(iter)
             self.update_treestore.set_value(niter, 3, False)
             self.update_treestore.set_value(niter, 1, _("MLS/MCS Range: %s") % mls)
@@ -2294,7 +2296,7 @@ class SELinuxGui():
             self.update_treestore.set_value(niter, 3, False)
             seuser = self.cur_dict["login"][login]["seuser"]
             self.update_treestore.set_value(niter, 1, (_("SELinux User: %s")) % seuser)
-            mls = self.cur_dict["login"][login]["range"]
+            mls = self.cur_dict["login"][login].get("range", "")
             niter = self.update_treestore.append(iter)
             self.update_treestore.set_value(niter, 3, False)
             self.update_treestore.set_value(niter, 1, _("MLS/MCS Range: %s") % mls)
@@ -2488,14 +2490,18 @@ class SELinuxGui():
                 for l in self.cur_dict[k]:
                     if self.cur_dict[k][l]["action"] == "-d":
                         update_buffer += "login -d %s\n" % l
-                    else:
+                    elif "range" in self.cur_dict[k][l]:
                         update_buffer += "login %s -s %s -r %s %s\n" % (self.cur_dict[k][l]["action"], self.cur_dict[k][l]["seuser"], self.cur_dict[k][l]["range"], l)
+                    else:
+                        update_buffer += "login %s -s %s %s\n" % (self.cur_dict[k][l]["action"], self.cur_dict[k][l]["seuser"], l)
             if k in "user":
                 for u in self.cur_dict[k]:
                     if self.cur_dict[k][u]["action"] == "-d":
                         update_buffer += "user -d %s\n" % u
-                    else:
+                    elif "level" in self.cur_dict[k][u] and "range" in self.cur_dict[k][u]:
                         update_buffer += "user %s -L %s -r %s -R %s %s\n" % (self.cur_dict[k][u]["action"], self.cur_dict[k][u]["level"], self.cur_dict[k][u]["range"], self.cur_dict[k][u]["role"], u)
+                    else:
+                        update_buffer += "user %s -R %s %s\n" % (self.cur_dict[k][u]["action"], self.cur_dict[k][u]["role"], u)
 
             if k in "fcontext-equiv":
                 for f in self.cur_dict[k]:
@@ -2552,59 +2558,13 @@ class SELinuxGui():
         self.network_mls_label.set_visible(advanced)
         self.network_mls_entry.set_visible(advanced)
 
-    def advanced_search_initialize(self, path):
-        try:
-            if path[0] == '/':
-                domain = sepolicy.get_init_transtype(path)
-            else:
-                domain = path
-        except IndexError:
-            return
-        except OSError:
-            return
-        iter = self.advanced_search_liststore.append()
-        self.advanced_search_liststore.set_value(iter, 0, path)
-        self.advanced_search_liststore.set_value(iter, 1, domain)
-        user_types = sepolicy.get_user_types()
-        if domain in user_types + ['initrc_t']:
-            return
-
-        entrypoints = sepolicy.get_entrypoints(domain)
-        # From entry_point = 0 to the number of keys in the dic
-        for exe in entrypoints:
-            if len(entrypoints[exe]):
-                file_class = entrypoints[exe][1]
-                for path in entrypoints[exe][0]:
-                    iter = self.advanced_search_liststore.append()
-                    self.advanced_search_liststore.set_value(iter, 1, domain)
-                    self.advanced_search_liststore.set_value(iter, 0, path)
-
-    def advanced_label_main(self, label, *args):
+    def on_show_advanced_search_window(self, label, *args):
         if label.get_text() == ADVANCED_SEARCH_LABEL[1]:
             label.set_text(ADVANCED_SEARCH_LABEL[0])
             self.close_popup()
         else:
             label.set_text(ADVANCED_SEARCH_LABEL[1])
             self.show_popup(self.advanced_search_window)
-
-    def advanced_radio_select(self, button):
-        label = ""
-        if button.get_active():
-            label = button.get_label()
-        if label == '':
-            return
-        self.advanced_search_liststore.clear()
-        if label == "All":
-            for items in self.all_list:
-                self.advanced_search_initialize(items)
-                self.idle_func()
-
-        elif label == "Installed":
-            if self.installed_list == []:
-                return
-            for items in self.installed_list:
-                self.advanced_search_initialize(items)
-                self.idle_func()
 
     def set_enforce_text(self, value):
         if value:
@@ -2615,6 +2575,9 @@ class SELinuxGui():
             self.current_status_permissive.set_active(True)
 
     def set_enforce(self, button):
+        if not self.finish_init:
+            return
+
         self.dbus.setenforce(button.get_active())
         self.set_enforce_text(button.get_active())
 

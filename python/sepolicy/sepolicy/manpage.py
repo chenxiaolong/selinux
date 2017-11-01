@@ -30,7 +30,14 @@ import sepolicy
 import os
 import time
 
-equiv_dict = {"smbd": ["samba"], "httpd": ["apache"], "virtd": ["virt", "libvirt", "svirt", "svirt_tcg", "svirt_lxc_t", "svirt_lxc_net_t"], "named": ["bind"], "fsdaemon": ["smartmon"], "mdadm": ["raid"]}
+typealias_types = {
+"antivirus_t":("amavis_t", "clamd_t", "clamscan_t", "freshclam_t"),
+"cluster_t":("rgmanager_t", "corosync_t", "aisexec_t", "pacemaker_t"),
+"svirt_t":("qemu_t"),
+"httpd_t":("phpfpm_t"),
+}
+
+equiv_dict = {"smbd": ["samba"], "httpd": ["apache"], "virtd": ["virt", "libvirt"], "named": ["bind"], "fsdaemon": ["smartmon"], "mdadm": ["raid"]}
 
 equiv_dirs = ["/var"]
 modules_dict = None
@@ -77,7 +84,8 @@ def get_all_users_info():
 
     for d in allusers_info:
         allusers.append(d['name'])
-        users_range[d['name'].split("_")[0]] = d['range']
+        if 'range' in d:
+            users_range[d['name'].split("_")[0]] = d['range']
 
     for u in allusers:
         if u not in ["system_u", "root", "unconfined_u"]:
@@ -87,11 +95,10 @@ def get_all_users_info():
 
 all_entrypoints = None
 
-
 def get_entrypoints():
     global all_entrypoints
     if not all_entrypoints:
-        all_entrypoints = sepolicy.info(sepolicy.ATTRIBUTE, "entry_type")[0]["types"]
+        all_entrypoints = next(sepolicy.info(sepolicy.ATTRIBUTE, "entry_type"))["types"]
     return all_entrypoints
 
 domains = None
@@ -186,7 +193,7 @@ class HTMLManPages:
         self.old_path = path + "/"
         self.new_path = self.old_path + self.os_version + "/"
 
-        if self.os_version in fedora_releases or rhel_releases:
+        if self.os_version in fedora_releases or self.os_version in rhel_releases:
             self.__gen_html_manpages()
         else:
             print("SELinux HTML man pages can not be generated for this %s" % os_version)
@@ -205,12 +212,12 @@ class HTMLManPages:
         for domain in self.manpage_domains.values():
             if len(domain):
                 for d in domain:
-                    convert_manpage_to_html((self.new_path + d.split("_selinux")[0] + ".html"), self.old_path + d)
+                    convert_manpage_to_html((self.new_path + d.rsplit("_selinux", 1)[0] + ".html"), self.old_path + d)
 
         for role in self.manpage_roles.values():
             if len(role):
                 for r in role:
-                    convert_manpage_to_html((self.new_path + r.split("_selinux")[0] + ".html"), self.old_path + r)
+                    convert_manpage_to_html((self.new_path + r.rsplit("_selinux", 1)[0] + ".html"), self.old_path + r)
 
     def _gen_index(self):
         index = self.old_path + "index.html"
@@ -256,7 +263,7 @@ Fedora or Red Hat Enterprise Linux Man Pages.</h2>
 </pre>
 	""")
         fd.close()
-        print("%s has been created") % index
+        print("%s has been created" % index)
 
     def _gen_body(self):
         html = self.new_path + self.os_version + ".html"
@@ -290,7 +297,7 @@ Fedora or Red Hat Enterprise Linux Man Pages.</h2>
             if len(self.manpage_roles[letter]):
                 rolename_body += "<p>"
                 for r in self.manpage_roles[letter]:
-                    rolename = r.split("_selinux")[0]
+                    rolename = r.rsplit("_selinux", 1)[0]
                     rolename_body += "<a name=%s_role></a><a href=%s.html>%s_selinux(8)</a> - Security Enhanced Linux Policy for the %s SELinux user\n" % (letter, rolename, rolename, rolename)
 
         fd.write("""%s
@@ -317,7 +324,7 @@ Fedora or Red Hat Enterprise Linux Man Pages.</h2>
             if len(self.manpage_domains[letter]):
                 domainname_body += "<p>"
                 for r in self.manpage_domains[letter]:
-                    domainname = r.split("_selinux")[0]
+                    domainname = r.rsplit("_selinux", 1)[0]
                     domainname_body += "<a name=%s_domain></a><a href=%s.html>%s_selinux(8)</a> - Security Enhanced Linux Policy for the %s SELinux processes\n" % (letter, domainname, domainname, domainname)
 
         fd.write("""%s
@@ -327,7 +334,7 @@ Fedora or Red Hat Enterprise Linux Man Pages.</h2>
 """ % domainname_body)
 
         fd.close()
-        print("%s has been created") % html
+        print("%s has been created" % html)
 
     def _gen_css(self):
         style_css = self.old_path + "style.css"
@@ -390,7 +397,7 @@ pre.code {
 """)
 
         fd.close()
-        print("%s has been created") % style_css
+        print("%s has been created" % style_css)
 
 
 class ManPage:
@@ -488,7 +495,7 @@ class ManPage:
             self.desc = "%s user role" % self.domainname
 
         if self.domainname in self.all_users:
-            self.attributes = sepolicy.info(sepolicy.TYPE, (self.type))[0]["attributes"]
+            self.attributes = next(sepolicy.info(sepolicy.TYPE, (self.type)))["attributes"]
             self._user_header()
             self._user_attribute()
             self._can_sudo()
@@ -504,6 +511,7 @@ class ManPage:
             self._booleans()
 
         self._port_types()
+        self._mcs_types()
         self._writes()
         self._footer()
 
@@ -522,11 +530,22 @@ class ManPage:
         self._get_ptypes()
 
         for domain_type in self.ptypes:
-            self.attributes[domain_type] = sepolicy.info(sepolicy.TYPE, ("%s") % domain_type)[0]["attributes"]
+            try:
+                if typealias_types[domain_type]:
+                    fd = self.fd
+                    man_page_path =  self.man_page_path
+                    for t in typealias_types[domain_type]:
+                        self._typealias_gen_man(t)
+                    self.fd = fd
+                    self.man_page_path = man_page_path
+            except KeyError:
+                continue;
+            self.attributes[domain_type] = next(sepolicy.info(sepolicy.TYPE, ("%s") % domain_type))["attributes"]
 
         self._header()
         self._entrypoints()
         self._process_types()
+        self._mcs_types()
         self._booleans()
         self._nsswitch_domain()
         self._port_types()
@@ -539,6 +558,34 @@ class ManPage:
         for f in self.all_domains:
             if f.startswith(self.short_name) or f.startswith(self.domainname):
                 self.ptypes.append(f)
+
+    def _typealias_gen_man(self, t):
+        self.man_page_path = "%s/%s_selinux.8" % (self.path, t[:-2])
+        self.ports = []
+        self.booltext = ""
+        self.fd = open(self.man_page_path, 'w')
+        self._typealias(t[:-2])
+        self._footer()
+        self.fd.close()
+
+    def _typealias(self,typealias):
+        self.fd.write('.TH  "%(typealias)s_selinux"  "8"  "%(date)s" "%(typealias)s" "SELinux Policy %(typealias)s"'
+                 % {'typealias':typealias, 'date': time.strftime("%y-%m-%d")})
+        self.fd.write(r"""
+.SH "NAME"
+%(typealias)s_selinux \- Security Enhanced Linux Policy for the %(typealias)s processes
+.SH "DESCRIPTION"
+
+%(typealias)s_t SELinux domain type is now associated with %(domainname)s domain type (%(domainname)s_t).
+""" % {'typealias':typealias, 'domainname':self.domainname})
+
+        self.fd.write(r"""
+Please see
+
+.B %(domainname)s_selinux
+
+man page for more details.
+"""  % {'domainname':self.domainname})
 
     def _header(self):
         self.fd.write('.TH  "%(domainname)s_selinux"  "8"  "%(date)s" "%(domainname)s" "SELinux Policy %(domainname)s"'
@@ -761,6 +808,7 @@ Note: SELinux often uses regular expressions to specify labels that match multip
         self.fd.write(r"""
 .I The following file types are defined for %(domainname)s:
 """ % {'domainname': self.domainname})
+        flist.sort()
         for f in flist:
             self.fd.write("""
 
@@ -874,8 +922,7 @@ This manual page was auto-generated using
 .B "sepolicy manpage".
 
 .SH "SEE ALSO"
-selinux(8), %s(8), semanage(8), restorecon(8), chcon(1), sepolicy(8)
-""" % (self.domainname))
+selinux(8), %s(8), semanage(8), restorecon(8), chcon(1), sepolicy(8)""" % (self.domainname))
 
         if self.booltext != "":
             self.fd.write(", setsebool(8)")
@@ -892,9 +939,12 @@ selinux(8), %s(8), semanage(8), restorecon(8), chcon(1), sepolicy(8)
         return True
 
     def _entrypoints(self):
-        try:
-            entrypoints = map(lambda x: x['target'], sepolicy.search([sepolicy.ALLOW], {'source': self.type, 'permlist': ['entrypoint'], 'class': 'file'}))
-        except:
+        entrypoints = [x['target'] for x in filter(lambda y:
+            y['source'] == self.type and y['class'] == 'file' and 'entrypoint' in y['permlist'],
+            sepolicy.get_all_allow_rules()
+        )]
+
+        if len(entrypoints) == 0:
             return
 
         self.fd.write("""
@@ -923,16 +973,38 @@ All executeables with the default executable label, usually stored in /usr/bin a
         self.fd.write("""
 %s""" % ", ".join(paths))
 
+    def _mcs_types(self):
+        try:
+            mcs_constrained_type = next(sepolicy.info(sepolicy.ATTRIBUTE, "mcs_constrained_type"))
+        except StopIteration:
+            return
+        if self.type not in mcs_constrained_type['types']:
+            return
+        self.fd.write ("""
+.SH "MCS Constrained"
+The SELinux process type %(type)s_t is an MCS (Multi Category Security) constrained type.  Sometimes this separation is referred to as sVirt. These types are usually used for securing multi-tenant environments, such as virtualization, containers or separation of users.  The tools used to launch MCS types, pick out a different MCS label for each process group.
+
+For example one process might be launched with %(type)s_t:s0:c1,c2, and another process launched with %(type)s_t:s0:c3,c4. The SELinux kernel only allows these processes can only write to content with a matching MCS label, or a MCS Label of s0. A process running with the MCS level of s0:c1,c2 is not allowed to write to content with the MCS label of s0:c3,c4
+""" % {'type': self.domainname})
+
     def _writes(self):
-        permlist = sepolicy.search([sepolicy.ALLOW], {'source': self.type, 'permlist': ['open', 'write'], 'class': 'file'})
+        # add assigned attributes
+        src_list = [self.type]
+        try:
+            src_list += list(filter(lambda x: x['name'] == self.type, sepolicy.get_all_types_info()))[0]['attributes']
+        except:
+            pass
+
+        permlist = list(filter(lambda x:
+            x['source'] in src_list and
+            set(['open', 'write']).issubset(x['permlist']) and
+            x['class'] == 'file',
+            sepolicy.get_all_allow_rules()))
         if permlist is None or len(permlist) == 0:
             return
 
         all_writes = []
         attributes = ["proc_type", "sysctl_type"]
-        for i in permlist:
-            if not i['target'].endswith("_t"):
-                attributes.append(i['target'])
 
         for i in permlist:
             if self._valid_write(i['target'], attributes):
@@ -1131,7 +1203,12 @@ The SELinux user %s_u is able to connect to the following tcp ports.
 """ % ",".join(ports))
 
     def _home_exec(self):
-        permlist = sepolicy.search([sepolicy.ALLOW], {'source': self.type, 'target': 'user_home_type', 'class': 'file', 'permlist': ['ioctl', 'read', 'getattr', 'execute', 'execute_no_trans', 'open']})
+        permlist = list(filter(lambda x:
+            x['source'] == self.type and
+            x['target'] == 'user_home_type' and
+            x['class'] == 'file' and
+            set(['ioctl', 'read', 'getattr', 'execute', 'execute_no_trans', 'open']).issubset(set(x['permlist'])),
+            sepolicy.get_all_allow_rules()))
         self.fd.write("""
 .SH HOME_EXEC
 """)
@@ -1159,7 +1236,7 @@ Three things can happen when %(type)s attempts to execute a program.
 
 Execute the following to see the types that the SELinux user %(type)s can execute without transitioning:
 
-.B search -A -s %(type)s -c file -p execute_no_trans
+.B sesearch -A -s %(type)s -c file -p execute_no_trans
 
 .TP
 
@@ -1167,7 +1244,7 @@ Execute the following to see the types that the SELinux user %(type)s can execut
 
 Execute the following to see the types that the SELinux user %(type)s can execute and transition:
 
-.B $ search -A -s %(type)s -c process -p transition
+.B $ sesearch -A -s %(type)s -c process -p transition
 
 """ % {'user': self.domainname, 'type': self.type})
 

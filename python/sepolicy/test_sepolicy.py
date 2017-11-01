@@ -60,7 +60,7 @@ class SepolicyTests(unittest.TestCase):
         self.assertSuccess(p.returncode, err)
 
     def test_transition_s(self):
-        "Verify sepolicy transition -l works"
+        "Verify sepolicy transition -s works"
         p = Popen(['sepolicy', 'transition', '-s', 'httpd_t'], stdout=PIPE)
         out, err = p.communicate()
         self.assertSuccess(p.returncode, err)
@@ -115,7 +115,7 @@ class SepolicyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     import selinux
-    if selinux.security_getenforce() == 1:
+    if selinux.is_selinux_enabled() and selinux.security_getenforce() == 1:
         unittest.main()
     else:
         print("SELinux must be in enforcing mode for this test")

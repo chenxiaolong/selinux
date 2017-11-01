@@ -95,23 +95,28 @@ static const char *semanage_store_paths[SEMANAGE_NUM_STORES] = {
 static const char *semanage_sandbox_paths[SEMANAGE_STORE_NUM_PATHS] = {
 	"",
 	"/modules",
-	"/base.linked",
+	"/policy.linked",
 	"/homedir_template",
 	"/file_contexts.template",
 	"/commit_num",
+	"/pkeys.local",
+	"/ibendports.local",
 	"/ports.local",
 	"/interfaces.local",
 	"/nodes.local",
 	"/booleans.local",
 	"/seusers.local",
+	"/seusers.linked",
 	"/users.local",
 	"/users_extra.local",
+	"/users_extra.linked",
 	"/users_extra",
 	"/disable_dontaudit",
 	"/preserve_tunables",
 	"/modules/disabled",
 	"/policy.kern",
 	"/file_contexts.local",
+	"/file_contexts.homedirs",
 	"/file_contexts",
 	"/seusers"
 };
@@ -810,7 +815,7 @@ int semanage_remove_directory(const char *path)
 		return -1;
 	}
 	for (i = 0; i < num_entries; i++) {
-		char s[NAME_MAX];
+		char s[PATH_MAX];
 		struct stat buf;
 		snprintf(s, sizeof(s), "%s/%s", path, namelist[i]->d_name);
 		if (stat(s, &buf) == -1) {
@@ -1012,8 +1017,7 @@ int semanage_get_cil_paths(semanage_handle_t * sh,
 	names = calloc(num_modinfos, sizeof(*names));
 	if (names == NULL) {
 		ERR(sh, "Error allocating space for filenames.");
-		status = -1;
-		goto cleanup;
+		return -1;
 	}
 
 	for (i = 0; i < num_modinfos; i++) {
@@ -1158,7 +1162,7 @@ cleanup:
 	free(all_modinfos);
 
 	if (status != 0) {
-		for (i = 0; i < j; j++) {
+		for (i = 0; i < j; i++) {
 			semanage_module_info_destroy(sh, &(*modinfo)[i]);
 		}
 		free(*modinfo);
@@ -1194,8 +1198,14 @@ static char *append(char *s, char c)
 static char *append_str(char *s, const char *t)
 {
 	size_t s_len = (s == NULL ? 0 : strlen(s));
-	size_t t_len = (t == NULL ? 0 : strlen(t));
-	char *new_s = realloc(s, s_len + t_len + 1);
+	size_t t_len;
+	char *new_s;
+
+	if (t == NULL) {
+		return s;
+	}
+	t_len = strlen(t);
+	new_s = realloc(s, s_len + t_len + 1);
 	if (new_s == NULL) {
 		return NULL;
 	}
@@ -2037,9 +2047,10 @@ int semanage_load_files(semanage_handle_t * sh, cil_db_t *cildb, char **filename
  */
 
 /**
- * Read the policy from the sandbox (kernel)
+ * Read the policy from the sandbox (linked or kernel)
  */
-int semanage_read_policydb(semanage_handle_t * sh, sepol_policydb_t * in)
+int semanage_read_policydb(semanage_handle_t * sh, sepol_policydb_t * in,
+			   enum semanage_sandbox_defs file)
 {
 
 	int retval = STATUS_ERR;
@@ -2048,7 +2059,7 @@ int semanage_read_policydb(semanage_handle_t * sh, sepol_policydb_t * in)
 	FILE *infile = NULL;
 
 	if ((kernel_filename =
-	     semanage_path(SEMANAGE_ACTIVE, SEMANAGE_STORE_KERNEL)) == NULL) {
+	     semanage_path(SEMANAGE_ACTIVE, file)) == NULL) {
 		goto cleanup;
 	}
 	if ((infile = fopen(kernel_filename, "r")) == NULL) {
@@ -2078,9 +2089,10 @@ int semanage_read_policydb(semanage_handle_t * sh, sepol_policydb_t * in)
 	return retval;
 }
 /**
- * Writes the final policy to the sandbox (kernel)
+ * Writes the policy to the sandbox (linked or kernel)
  */
-int semanage_write_policydb(semanage_handle_t * sh, sepol_policydb_t * out)
+int semanage_write_policydb(semanage_handle_t * sh, sepol_policydb_t * out,
+			    enum semanage_sandbox_defs file)
 {
 
 	int retval = STATUS_ERR;
@@ -2089,7 +2101,7 @@ int semanage_write_policydb(semanage_handle_t * sh, sepol_policydb_t * out)
 	FILE *outfile = NULL;
 
 	if ((kernel_filename =
-	     semanage_path(SEMANAGE_TMP, SEMANAGE_STORE_KERNEL)) == NULL) {
+	     semanage_path(SEMANAGE_TMP, file)) == NULL) {
 		goto cleanup;
 	}
 	if ((outfile = fopen(kernel_filename, "wb")) == NULL) {

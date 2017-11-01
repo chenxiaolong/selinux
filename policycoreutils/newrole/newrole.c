@@ -228,7 +228,7 @@ static int free_hashtab_entry(hashtab_key_t key, hashtab_datum_t d,
 	return 0;
 }
 
-static unsigned int reqsymhash(hashtab_t h, hashtab_key_t key)
+static unsigned int reqsymhash(hashtab_t h, const_hashtab_key_t key)
 {
 	char *p, *keyp;
 	size_t size;
@@ -244,14 +244,10 @@ static unsigned int reqsymhash(hashtab_t h, hashtab_key_t key)
 }
 
 static int reqsymcmp(hashtab_t h
-		     __attribute__ ((unused)), hashtab_key_t key1,
-		     hashtab_key_t key2)
+		     __attribute__ ((unused)), const_hashtab_key_t key1,
+		     const_hashtab_key_t key2)
 {
-	char *keyp1, *keyp2;
-
-	keyp1 = (char *)key1;
-	keyp2 = (char *)key2;
-	return strcmp(keyp1, keyp2);
+	return strcmp(key1, key2);
 }
 
 static hashtab_t app_service_names = NULL;
@@ -416,7 +412,7 @@ static int verify_shell(const char *shell_name)
  * This function assigns malloc'd memory into the pw_copy struct.
  * Returns zero on success, non-zero otherwise
  */
-int extract_pw_data(struct passwd *pw_copy)
+static int extract_pw_data(struct passwd *pw_copy)
 {
 	uid_t uid;
 	struct passwd *pw;
@@ -460,6 +456,9 @@ int extract_pw_data(struct passwd *pw_copy)
 	free(pw->pw_name);
 	free(pw->pw_dir);
 	free(pw->pw_shell);
+	pw->pw_name = NULL;
+	pw->pw_dir = NULL;
+	pw->pw_shell = NULL;
 	return -1;
 }
 
@@ -1114,6 +1113,7 @@ int main(int argc, char *argv[])
 	 * malicious software), not to authorize the operation (which is covered
 	 * by policy).  Trusted path mechanism would be preferred.
 	 */
+	memset(&pw, 0, sizeof(pw));
 	if (extract_pw_data(&pw))
 		goto err_free;
 

@@ -567,7 +567,7 @@ int cil_typeattribute_to_policydb(policydb_t *pdb, struct cil_typeattribute *cil
 	char *key = NULL;
 	type_datum_t *sepol_attr = NULL;
 
-	if (cil_attr->used == CIL_FALSE) {
+	if (!cil_attr->used) {
 		return SEPOL_OK;		
 	}
 
@@ -632,7 +632,7 @@ int cil_typeattribute_to_bitmap(policydb_t *pdb, const struct cil_db *db, struct
 	ebitmap_node_t *tnode;
 	unsigned int i;
 
-	if (cil_attr->used == CIL_FALSE) {
+	if (!cil_attr->used) {
 		return SEPOL_OK;
 	}
 
@@ -1018,7 +1018,14 @@ int __cil_insert_type_rule(policydb_t *pdb, uint32_t kind, uint32_t src, uint32_
 		 * non-duplicate rule using the same key.
 		 */
 		if (existing->datum.data != res) {
-			cil_log(CIL_ERR, "Conflicting type rules (scontext=%s tcontext=%s tclass=%s result=%s)\n", cil_rule->src_str, cil_rule->tgt_str, cil_rule->obj_str, cil_rule->result_str);
+			cil_log(CIL_ERR, "Conflicting type rules (scontext=%s tcontext=%s tclass=%s result=%s), existing=%s\n",
+				pdb->p_type_val_to_name[src - 1],
+				pdb->p_type_val_to_name[tgt - 1],
+				pdb->p_class_val_to_name[obj - 1],
+				pdb->p_type_val_to_name[res - 1],
+				pdb->p_type_val_to_name[existing->datum.data - 1]);
+			cil_log(CIL_ERR, "Expanded from type rule (scontext=%s tcontext=%s tclass=%s result=%s)\n",
+				cil_rule->src_str, cil_rule->tgt_str, cil_rule->obj_str, cil_rule->result_str);
 			rc = SEPOL_ERR;
 		}
 		goto exit;
@@ -1044,7 +1051,14 @@ int __cil_insert_type_rule(policydb_t *pdb, uint32_t kind, uint32_t src, uint32_
 			search_datum = cil_cond_av_list_search(&avtab_key, other_list);
 			if (search_datum == NULL) {
 				if (existing->datum.data != res) {
-					cil_log(CIL_ERR, "Conflicting type rules (scontext=%s tcontext=%s tclass=%s result=%s)\n", cil_rule->src_str, cil_rule->tgt_str, cil_rule->obj_str, cil_rule->result_str);
+					cil_log(CIL_ERR, "Conflicting type rules (scontext=%s tcontext=%s tclass=%s result=%s), existing=%s\n",
+						pdb->p_type_val_to_name[src - 1],
+						pdb->p_type_val_to_name[tgt - 1],
+						pdb->p_class_val_to_name[obj - 1],
+						pdb->p_type_val_to_name[res - 1],
+						pdb->p_type_val_to_name[existing->datum.data - 1]);
+					cil_log(CIL_ERR, "Expanded from type rule (scontext=%s tcontext=%s tclass=%s result=%s)\n",
+						cil_rule->src_str, cil_rule->tgt_str, cil_rule->obj_str, cil_rule->result_str);
 					rc = SEPOL_ERR;
 					goto exit;
 				}
@@ -1146,6 +1160,10 @@ int __cil_typetransition_to_avtab(policydb_t *pdb, const struct cil_db *db, stru
 		trans.tgt = typetrans->tgt;
 		trans.obj = typetrans->obj;
 		trans.result = typetrans->result;
+		trans.src_str = typetrans->src_str;
+		trans.tgt_str = typetrans->tgt_str;
+		trans.obj_str = typetrans->obj_str;
+		trans.result_str = typetrans->result_str;
 		return __cil_type_rule_to_avtab(pdb, db, &trans, cond_node, cond_flavor);
 	}
 
@@ -1411,6 +1429,22 @@ exit:
 	return rc;
 }
 
+static int __cil_should_expand_attribute( const struct cil_db *db, struct cil_symtab_datum *datum)
+{
+	struct cil_tree_node *node;
+	struct cil_typeattribute *attr;
+
+	node = NODE(datum);
+
+	if (node->flavor != CIL_TYPEATTRIBUTE) {
+		return CIL_FALSE;
+	}
+
+	attr = (struct cil_typeattribute *)datum;
+
+	return !attr->used || (ebitmap_cardinality(attr->types) < db->attrs_expand_size);
+}
+
 int __cil_avrule_to_avtab(policydb_t *pdb, const struct cil_db *db, struct cil_avrule *cil_avrule, cond_node_t *cond_node, enum cil_flavor cond_flavor)
 {
 	int rc = SEPOL_ERR;
@@ -1418,6 +1452,9 @@ int __cil_avrule_to_avtab(policydb_t *pdb, const struct cil_db *db, struct cil_a
 	struct cil_symtab_datum *src = NULL;
 	struct cil_symtab_datum *tgt = NULL;
 	struct cil_list *classperms = cil_avrule->perms.classperms;
+	ebitmap_t src_bitmap, tgt_bitmap;
+	ebitmap_node_t *snode, *tnode;
+	unsigned int s,t;
 
 	if (cil_avrule->rule_kind == CIL_AVRULE_DONTAUDIT && db->disable_dontaudit == CIL_TRUE) {
 		// Do not add dontaudit rules to binary
@@ -1429,27 +1466,94 @@ int __cil_avrule_to_avtab(policydb_t *pdb, const struct cil_db *db, struct cil_a
 	tgt = cil_avrule->tgt;
 
 	if (tgt->fqn == CIL_KEY_SELF) {
-		ebitmap_t type_bitmap;
-		ebitmap_node_t *tnode;
-		unsigned int i;
+		rc = __cil_expand_type(src, &src_bitmap);
+		if (rc != SEPOL_OK) {
+			goto exit;
+		}
 
-		rc = __cil_expand_type(src, &type_bitmap);
-		if (rc != SEPOL_OK) goto exit;
+		ebitmap_for_each_bit(&src_bitmap, snode, s) {
+			if (!ebitmap_get_bit(&src_bitmap, s)) continue;
 
-		ebitmap_for_each_bit(&type_bitmap, tnode, i) {
-			if (!ebitmap_get_bit(&type_bitmap, i)) continue;
-
-			src = DATUM(db->val_to_type[i]);
+			src = DATUM(db->val_to_type[s]);
 			rc = __cil_avrule_expand(pdb, kind, src, src, classperms, cond_node, cond_flavor);
 			if (rc != SEPOL_OK) {
-				ebitmap_destroy(&type_bitmap);
+				ebitmap_destroy(&src_bitmap);
 				goto exit;
 			}
 		}
-		ebitmap_destroy(&type_bitmap);
+		ebitmap_destroy(&src_bitmap);
 	} else {
-		rc = __cil_avrule_expand(pdb, kind, src, tgt, classperms, cond_node, cond_flavor);
-		if (rc != SEPOL_OK) goto exit;
+		int expand_src = __cil_should_expand_attribute(db, src);
+		int expand_tgt = __cil_should_expand_attribute(db, tgt);
+		if (!expand_src && !expand_tgt) {
+			rc = __cil_avrule_expand(pdb, kind, src, tgt, classperms, cond_node, cond_flavor);
+			if (rc != SEPOL_OK) {
+				goto exit;
+			}
+		} else if (expand_src && expand_tgt) {
+			rc = __cil_expand_type(src, &src_bitmap);
+			if (rc != SEPOL_OK) {
+				goto exit;
+			}
+
+			rc = __cil_expand_type(tgt, &tgt_bitmap);
+			if (rc != SEPOL_OK) {
+				ebitmap_destroy(&src_bitmap);
+				goto exit;
+			}
+
+			ebitmap_for_each_bit(&src_bitmap, snode, s) {
+				if (!ebitmap_get_bit(&src_bitmap, s)) continue;
+				src = DATUM(db->val_to_type[s]);
+				ebitmap_for_each_bit(&tgt_bitmap, tnode, t) {
+					if (!ebitmap_get_bit(&tgt_bitmap, t)) continue;
+					tgt = DATUM(db->val_to_type[t]);
+
+					rc = __cil_avrule_expand(pdb, kind, src, tgt, classperms, cond_node, cond_flavor);
+					if (rc != SEPOL_OK) {
+						ebitmap_destroy(&src_bitmap);
+						ebitmap_destroy(&tgt_bitmap);
+						goto exit;
+					}
+				}
+			}
+			ebitmap_destroy(&src_bitmap);
+			ebitmap_destroy(&tgt_bitmap);
+		} else if (expand_src) {
+			rc = __cil_expand_type(src, &src_bitmap);
+			if (rc != SEPOL_OK) {
+				goto exit;
+			}
+
+			ebitmap_for_each_bit(&src_bitmap, snode, s) {
+				if (!ebitmap_get_bit(&src_bitmap, s)) continue;
+				src = DATUM(db->val_to_type[s]);
+
+				rc = __cil_avrule_expand(pdb, kind, src, tgt, classperms, cond_node, cond_flavor);
+				if (rc != SEPOL_OK) {
+					ebitmap_destroy(&src_bitmap);
+					goto exit;
+				}
+			}
+			ebitmap_destroy(&src_bitmap);
+		} else { /* expand_tgt */
+			rc = __cil_expand_type(tgt, &tgt_bitmap);
+			if (rc != SEPOL_OK) {
+				goto exit;
+			}
+
+			ebitmap_for_each_bit(&tgt_bitmap, tnode, t) {
+				if (!ebitmap_get_bit(&tgt_bitmap, t)) continue;
+				tgt = DATUM(db->val_to_type[t]);
+
+				rc = __cil_avrule_expand(pdb, kind, src, tgt, classperms, cond_node, cond_flavor);
+				if (rc != SEPOL_OK) {
+					ebitmap_destroy(&tgt_bitmap);
+					goto exit;
+				}
+			}
+			ebitmap_destroy(&tgt_bitmap);
+		}
 	}
 
 	return SEPOL_OK;
@@ -1724,11 +1828,9 @@ int cil_avrulex_to_hashtable(policydb_t *pdb, const struct cil_db *db, struct ci
 	uint16_t kind;
 	struct cil_symtab_datum *src = NULL;
 	struct cil_symtab_datum *tgt = NULL;
-	ebitmap_t type_bitmap;
-	ebitmap_node_t *tnode;
-	unsigned int i;
-
-	ebitmap_init(&type_bitmap);
+	ebitmap_t src_bitmap, tgt_bitmap;
+	ebitmap_node_t *snode, *tnode;
+	unsigned int s,t;
 
 	if (cil_avrulex->rule_kind == CIL_AVRULE_DONTAUDIT && db->disable_dontaudit == CIL_TRUE) {
 		// Do not add dontaudit rules to binary
@@ -1741,28 +1843,97 @@ int cil_avrulex_to_hashtable(policydb_t *pdb, const struct cil_db *db, struct ci
 	tgt = cil_avrulex->tgt;
 
 	if (tgt->fqn == CIL_KEY_SELF) {
-		rc = __cil_expand_type(src, &type_bitmap);
+		rc = __cil_expand_type(src, &src_bitmap);
 		if (rc != SEPOL_OK) goto exit;
 
-		ebitmap_for_each_bit(&type_bitmap, tnode, i) {
-			if (!ebitmap_get_bit(&type_bitmap, i)) continue;
+		ebitmap_for_each_bit(&src_bitmap, snode, s) {
+			if (!ebitmap_get_bit(&src_bitmap, s)) continue;
 
-			src = DATUM(db->val_to_type[i]);
+			src = DATUM(db->val_to_type[s]);
 			rc = __cil_avrulex_to_hashtable_helper(pdb, kind, src, src, cil_avrulex->perms.x.permx, args);
 			if (rc != SEPOL_OK) {
 				goto exit;
 			}
 		}
+		ebitmap_destroy(&src_bitmap);
 	} else {
-		rc = __cil_avrulex_to_hashtable_helper(pdb, kind, src, tgt, cil_avrulex->perms.x.permx, args);
-		if (rc != SEPOL_OK) goto exit;
+		int expand_src = __cil_should_expand_attribute(db, src);
+		int expand_tgt = __cil_should_expand_attribute(db, tgt);
+
+		if (!expand_src && !expand_tgt) {
+			rc = __cil_avrulex_to_hashtable_helper(pdb, kind, src, tgt, cil_avrulex->perms.x.permx, args);
+			if (rc != SEPOL_OK) {
+				goto exit;
+			}
+		} else if (expand_src && expand_tgt) {
+			rc = __cil_expand_type(src, &src_bitmap);
+			if (rc != SEPOL_OK) {
+				goto exit;
+			}
+
+			rc = __cil_expand_type(tgt, &tgt_bitmap);
+			if (rc != SEPOL_OK) {
+				ebitmap_destroy(&src_bitmap);
+				goto exit;
+			}
+
+			ebitmap_for_each_bit(&src_bitmap, snode, s) {
+				if (!ebitmap_get_bit(&src_bitmap, s)) continue;
+				src = DATUM(db->val_to_type[s]);
+				ebitmap_for_each_bit(&tgt_bitmap, tnode, t) {
+					if (!ebitmap_get_bit(&tgt_bitmap, t)) continue;
+					tgt = DATUM(db->val_to_type[t]);
+
+					rc = __cil_avrulex_to_hashtable_helper(pdb, kind, src, tgt, cil_avrulex->perms.x.permx, args);
+					if (rc != SEPOL_OK) {
+						ebitmap_destroy(&src_bitmap);
+						ebitmap_destroy(&tgt_bitmap);
+						goto exit;
+					}
+				}
+			}
+			ebitmap_destroy(&src_bitmap);
+			ebitmap_destroy(&tgt_bitmap);
+		} else if (expand_src) {
+			rc = __cil_expand_type(src, &src_bitmap);
+			if (rc != SEPOL_OK) {
+				goto exit;
+			}
+
+			ebitmap_for_each_bit(&src_bitmap, snode, s) {
+				if (!ebitmap_get_bit(&src_bitmap, s)) continue;
+				src = DATUM(db->val_to_type[s]);
+
+				rc = __cil_avrulex_to_hashtable_helper(pdb, kind, src, tgt, cil_avrulex->perms.x.permx, args);
+				if (rc != SEPOL_OK) {
+					ebitmap_destroy(&src_bitmap);
+					goto exit;
+				}
+			}
+			ebitmap_destroy(&src_bitmap);
+		} else { /* expand_tgt */
+			rc = __cil_expand_type(tgt, &tgt_bitmap);
+			if (rc != SEPOL_OK) {
+				goto exit;
+			}
+
+			ebitmap_for_each_bit(&tgt_bitmap, tnode, t) {
+				if (!ebitmap_get_bit(&tgt_bitmap, t)) continue;
+				tgt = DATUM(db->val_to_type[t]);
+
+				rc = __cil_avrulex_to_hashtable_helper(pdb, kind, src, tgt, cil_avrulex->perms.x.permx, args);
+				if (rc != SEPOL_OK) {
+					ebitmap_destroy(&tgt_bitmap);
+					goto exit;
+				}
+			}
+			ebitmap_destroy(&tgt_bitmap);
+		}
 	}
 
-	rc = SEPOL_OK;
+	return SEPOL_OK;
 
 exit:
-	ebitmap_destroy(&type_bitmap);
-
 	return rc;
 }
 
@@ -1876,7 +2047,7 @@ static void __cil_expr_to_string(struct cil_list *expr, enum cil_flavor flavor, 
 				cil_asprintf(out, "%s %s", CIL_KEY_NOT, s1);
 				free(s1);
 			} else {
-				char *opstr = "";
+				const char *opstr = "";
 
 				__cil_expr_to_string_helper(curr->next->next, flavor, &s2);
 
@@ -2206,7 +2377,6 @@ int cil_roletrans_to_policydb(policydb_t *pdb, const struct cil_db *db, struct c
 				new->tclass = sepol_obj->s.value;
 				new->new_role = sepol_result->s.value;
 
-				rc = SEPOL_OK;
 				rc = hashtab_insert(role_trans_table, (hashtab_key_t)new, &(new->new_role));
 				if (rc != SEPOL_OK) {
 					if (rc == SEPOL_EEXIST) {
@@ -2353,12 +2523,19 @@ int __cil_constrain_expr_datum_to_sepol_expr(policydb_t *pdb, const struct cil_d
 		if (pdb->policyvers >= POLICYDB_VERSION_CONSTRAINT_NAMES) {
 			rc = __cil_get_sepol_type_datum(pdb, item->data, &sepol_type);
 			if (rc != SEPOL_OK) {
-				ebitmap_destroy(&type_bitmap);
-				goto exit;
+				if (FLAVOR(item->data) == CIL_TYPEATTRIBUTE) {
+					struct cil_typeattribute *attr = item->data;
+					if (!attr->used) {
+						rc = 0;
+					}
+				}
 			}
 
-			if (ebitmap_set_bit(&expr->type_names->types, sepol_type->s.value - 1, 1)) {
-				ebitmap_destroy(&type_bitmap);
+			if (sepol_type) {
+				rc = ebitmap_set_bit(&expr->type_names->types, sepol_type->s.value - 1, 1);
+			}
+
+			if (rc != SEPOL_OK) {
 				goto exit;
 			}
 		}
@@ -2994,7 +3171,6 @@ int cil_rangetransition_to_policydb(policydb_t *pdb, const struct cil_db *db, st
 					goto exit;
 				}
 
-				rc = SEPOL_OK;
 				rc = hashtab_insert(range_trans_table, (hashtab_key_t)newkey, newdatum);
 				if (rc != SEPOL_OK) {
 					if (rc == SEPOL_EEXIST) {
@@ -3039,6 +3215,40 @@ exit:
 	ebitmap_destroy(&src_bitmap);
 	ebitmap_destroy(&tgt_bitmap);
 	cil_list_destroy(&class_list, CIL_FALSE);
+	return rc;
+}
+
+int cil_ibpkeycon_to_policydb(policydb_t *pdb, struct cil_sort *ibpkeycons)
+{
+	int rc = SEPOL_ERR;
+	uint32_t i = 0;
+	ocontext_t *tail = NULL;
+	struct in6_addr subnet_prefix;
+
+	for (i = 0; i < ibpkeycons->count; i++) {
+		struct cil_ibpkeycon *cil_ibpkeycon = ibpkeycons->array[i];
+		ocontext_t *new_ocon = cil_add_ocontext(&pdb->ocontexts[OCON_IBPKEY], &tail);
+
+		rc = inet_pton(AF_INET6, cil_ibpkeycon->subnet_prefix_str, &subnet_prefix);
+		if (rc != 1) {
+			cil_log(CIL_ERR, "ibpkeycon subnet prefix not in valid IPV6 format\n");
+			rc = SEPOL_ERR;
+			goto exit;
+		}
+
+		memcpy(&new_ocon->u.ibpkey.subnet_prefix, &subnet_prefix.s6_addr[0],
+		       sizeof(new_ocon->u.ibpkey.subnet_prefix));
+		new_ocon->u.ibpkey.low_pkey = cil_ibpkeycon->pkey_low;
+		new_ocon->u.ibpkey.high_pkey = cil_ibpkeycon->pkey_high;
+
+		rc = __cil_context_to_sepol_context(pdb, cil_ibpkeycon->context, &new_ocon->context[0]);
+		if (rc != SEPOL_OK)
+			goto exit;
+	}
+
+	return SEPOL_OK;
+
+exit:
 	return rc;
 }
 
@@ -3105,6 +3315,30 @@ int cil_netifcon_to_policydb(policydb_t *pdb, struct cil_sort *netifcons)
 			context_destroy(&new_ocon->context[0]);
 			goto exit;
 		}
+	}
+
+	return SEPOL_OK;
+
+exit:
+	return rc;
+}
+
+int cil_ibendportcon_to_policydb(policydb_t *pdb, struct cil_sort *ibendportcons)
+{
+	int rc = SEPOL_ERR;
+	uint32_t i;
+	ocontext_t *tail = NULL;
+
+	for (i = 0; i < ibendportcons->count; i++) {
+		ocontext_t *new_ocon = cil_add_ocontext(&pdb->ocontexts[OCON_IBENDPORT], &tail);
+		struct cil_ibendportcon *cil_ibendportcon = ibendportcons->array[i];
+
+		new_ocon->u.ibendport.dev_name = cil_strdup(cil_ibendportcon->dev_name_str);
+		new_ocon->u.ibendport.port = cil_ibendportcon->port;
+
+		rc = __cil_context_to_sepol_context(pdb, cil_ibendportcon->context, &new_ocon->context[0]);
+		if (rc != SEPOL_OK)
+			goto exit;
 	}
 
 	return SEPOL_OK;
@@ -3672,6 +3906,16 @@ int __cil_contexts_to_policydb(policydb_t *pdb, const struct cil_db *db)
 		goto exit;
 	}
 
+	rc = cil_ibpkeycon_to_policydb(pdb, db->ibpkeycon);
+	if (rc != SEPOL_OK) {
+		goto exit;
+	}
+
+	rc = cil_ibendportcon_to_policydb(pdb, db->ibendportcon);
+	if (rc != SEPOL_OK) {
+		goto exit;
+	}
+
 	if (db->target_platform == SEPOL_TARGET_XEN) {
 		rc = cil_pirqcon_to_policydb(pdb, db->pirqcon);
 		if (rc != SEPOL_OK) {
@@ -3980,53 +4224,53 @@ exit:
 	return rc;
 }
 
-static unsigned int filename_trans_hash(hashtab_t h, hashtab_key_t key)
+static unsigned int filename_trans_hash(hashtab_t h, const_hashtab_key_t key)
 {
-	filename_trans_t *k = (filename_trans_t *)key;
+	const filename_trans_t *k = (const filename_trans_t *)key;
 	return ((k->tclass + (k->ttype << 2) +
 				(k->stype << 9)) & (h->size - 1));
 }
 
 static int filename_trans_compare(hashtab_t h
-             __attribute__ ((unused)), hashtab_key_t key1,
-			              hashtab_key_t key2)
+             __attribute__ ((unused)), const_hashtab_key_t key1,
+			              const_hashtab_key_t key2)
 {
-	filename_trans_t *a = (filename_trans_t *)key1;
-	filename_trans_t *b = (filename_trans_t *)key2;
+	const filename_trans_t *a = (const filename_trans_t *)key1;
+	const filename_trans_t *b = (const filename_trans_t *)key2;
 
 	return a->stype != b->stype || a->ttype != b->ttype || a->tclass != b->tclass || strcmp(a->name, b->name);
 }
 
-static unsigned int range_trans_hash(hashtab_t h, hashtab_key_t key)
+static unsigned int range_trans_hash(hashtab_t h, const_hashtab_key_t key)
 {
-	range_trans_t *k = (range_trans_t *)key;
+	const range_trans_t *k = (const range_trans_t *)key;
 	return ((k->target_class + (k->target_type << 2) +
 				(k->source_type << 5)) & (h->size - 1));
 }
 
 static int range_trans_compare(hashtab_t h
-             __attribute__ ((unused)), hashtab_key_t key1,
-			              hashtab_key_t key2)
+             __attribute__ ((unused)), const_hashtab_key_t key1,
+			              const_hashtab_key_t key2)
 {
-	range_trans_t *a = (range_trans_t *)key1;
-	range_trans_t *b = (range_trans_t *)key2;
+	const range_trans_t *a = (const range_trans_t *)key1;
+	const range_trans_t *b = (const range_trans_t *)key2;
 
 	return a->source_type != b->source_type || a->target_type != b->target_type || a->target_class != b->target_class;
 }
 
-static unsigned int role_trans_hash(hashtab_t h, hashtab_key_t key)
+static unsigned int role_trans_hash(hashtab_t h, const_hashtab_key_t key)
 {
-	role_trans_t *k = (role_trans_t *)key;
+	const role_trans_t *k = (const role_trans_t *)key;
 	return ((k->role + (k->type << 2) +
 				(k->tclass << 5)) & (h->size - 1));
 }
 
 static int role_trans_compare(hashtab_t h
-             __attribute__ ((unused)), hashtab_key_t key1,
-			              hashtab_key_t key2)
+             __attribute__ ((unused)), const_hashtab_key_t key1,
+			              const_hashtab_key_t key2)
 {
-	role_trans_t *a = (role_trans_t *)key1;
-	role_trans_t *b = (role_trans_t *)key2;
+	const role_trans_t *a = (const role_trans_t *)key1;
+	const role_trans_t *b = (const role_trans_t *)key2;
 
 	return a->role != b->role || a->type != b->type || a->tclass != b->tclass;
 }
@@ -4034,9 +4278,9 @@ static int role_trans_compare(hashtab_t h
 /* Based on MurmurHash3, written by Austin Appleby and placed in the
  * public domain.
  */
-static unsigned int avrulex_hash(__attribute__((unused)) hashtab_t h, hashtab_key_t key)
+static unsigned int avrulex_hash(__attribute__((unused)) hashtab_t h, const_hashtab_key_t key)
 {
-	avtab_key_t *k = (avtab_key_t *)key;
+	const avtab_key_t *k = (const avtab_key_t *)key;
 
 	static const uint32_t c1 = 0xcc9e2d51;
 	static const uint32_t c2 = 0x1b873593;
@@ -4074,11 +4318,11 @@ static unsigned int avrulex_hash(__attribute__((unused)) hashtab_t h, hashtab_ke
 }
 
 static int avrulex_compare(hashtab_t h
-             __attribute__ ((unused)), hashtab_key_t key1,
-			              hashtab_key_t key2)
+             __attribute__ ((unused)), const_hashtab_key_t key1,
+			              const_hashtab_key_t key2)
 {
-	avtab_key_t *a = (avtab_key_t *)key1;
-	avtab_key_t *b = (avtab_key_t *)key2;
+	const avtab_key_t *a = (const avtab_key_t *)key1;
+	const avtab_key_t *b = (const avtab_key_t *)key2;
 
 	return a->source_type != b->source_type || a->target_type != b->target_type || a->target_class != b->target_class || a->specified != b->specified;
 }
@@ -4331,7 +4575,7 @@ static void __cil_print_classperm(struct cil_list *cp_list)
 
 static void __cil_print_permissionx(struct cil_permissionx *px)
 {
-	char *kind_str = "";
+	const char *kind_str = "";
 	char *expr_str;
 
 	switch (px->kind) {

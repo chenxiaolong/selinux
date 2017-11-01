@@ -1,5 +1,5 @@
 /*
- * Author : Stephen Smalley, <sds@epoch.ncsc.mil> 
+ * Author : Stephen Smalley, <sds@tycho.nsa.gov>
  */
 
 /*
@@ -20,6 +20,7 @@
  * Copyright (C) 2004-2005 Trusted Computer Solutions, Inc.
  * Copyright (C) 2003 - 2008 Tresys Technology, LLC
  * Copyright (C) 2007 Red Hat Inc.
+ * Copyright (C) 2017 Mellanox Techonologies Inc.
  *	This program is free software; you can redistribute it and/or modify
  *  	it under the terms of the GNU General Public License as published by
  *	the Free Software Foundation, version 2.
@@ -348,13 +349,14 @@ static int read_classes(ebitmap_t *e_classes)
 		cladatum = hashtab_search(policydbp->p_classes.table, id);
 		if (!cladatum) {
 			yyerror2("unknown class %s", id);
+			free(id);
 			return -1;
 		}
+		free(id);
 		if (ebitmap_set_bit(e_classes, cladatum->s.value - 1, TRUE)) {
 			yyerror("Out of memory");
 			return -1;
 		}
-		free(id);
 	}
 	return 0;
 }
@@ -1138,6 +1140,88 @@ int define_attrib(void)
 	return 0;
 }
 
+int expand_attrib(void)
+{
+	char *id;
+	ebitmap_t attrs;
+	type_datum_t *attr;
+	ebitmap_node_t *node;
+	uint32_t i;
+	int rc = -1;
+	int flags = 0;
+
+	if (pass == 1) {
+		for (i = 0; i < 2; i++) {
+			while ((id = queue_remove(id_queue))) {
+				free(id);
+			}
+		}
+		return 0;
+	}
+
+	ebitmap_init(&attrs);
+	while ((id = queue_remove(id_queue))) {
+		if (!id) {
+			yyerror("No attribute name for expandattribute statement?");
+			goto exit;
+		}
+
+		if (!is_id_in_scope(SYM_TYPES, id)) {
+			yyerror2("attribute %s is not within scope", id);
+			goto exit;
+		}
+
+		attr = hashtab_search(policydbp->p_types.table, id);
+		if (!attr) {
+			yyerror2("attribute %s is not declared", id);
+			goto exit;
+		}
+
+		if (attr->flavor != TYPE_ATTRIB) {
+			yyerror2("%s is a type, not an attribute", id);
+			goto exit;
+		}
+
+		if (attr->flags & TYPE_FLAGS_EXPAND_ATTR) {
+			yyerror2("%s already has the expandattribute option specified", id);
+			goto exit;
+		}
+		if (ebitmap_set_bit(&attrs, attr->s.value - 1, TRUE)) {
+			yyerror("Out of memory!");
+			goto exit;
+		}
+
+		free(id);
+	}
+
+	id = (char *) queue_remove(id_queue);
+	if (!id) {
+		yyerror("No option specified for attribute expansion.");
+		goto exit;
+	}
+
+	if (!strcmp(id, "T")) {
+		flags = TYPE_FLAGS_EXPAND_ATTR_TRUE;
+	} else {
+		flags = TYPE_FLAGS_EXPAND_ATTR_FALSE;
+	}
+
+	ebitmap_for_each_bit(&attrs, node, i) {
+		if (!ebitmap_node_get_bit(node, i)){
+			continue;
+		}
+		attr = hashtab_search(policydbp->p_types.table,
+				policydbp->sym_val_to_name[SYM_TYPES][i]);
+		attr->flags |= flags;
+	}
+
+	rc = 0;
+exit:
+	ebitmap_destroy(&attrs);
+	free(id);
+	return rc;
+}
+
 static int add_aliases_to_type(type_datum_t * type)
 {
 	char *id;
@@ -1232,6 +1316,7 @@ int define_typealias(void)
 		free(id);
 		return -1;
 	}
+	free(id);
 	return add_aliases_to_type(t);
 }
 
@@ -1263,6 +1348,7 @@ int define_typeattribute(void)
 		free(id);
 		return -1;
 	}
+	free(id);
 
 	while ((id = queue_remove(id_queue))) {
 		if (!is_id_in_scope(SYM_TYPES, id)) {
@@ -1424,11 +1510,13 @@ int define_type(int alias)
 		if (!attr) {
 			/* treat it as a fatal error */
 			yyerror2("attribute %s is not declared", id);
+			free(id);
 			return -1;
 		}
 
 		if (attr->flavor != TYPE_ATTRIB) {
 			yyerror2("%s is a type, not an attribute", id);
+			free(id);
 			return -1;
 		}
 
@@ -1459,25 +1547,25 @@ static int set_types(type_set_t * set, char *id, int *add, char starallowed)
 	type_datum_t *t;
 
 	if (strcmp(id, "*") == 0) {
+		free(id);
 		if (!starallowed) {
 			yyerror("* not allowed in this type of rule");
 			return -1;
 		}
 		/* set TYPE_STAR flag */
 		set->flags = TYPE_STAR;
-		free(id);
 		*add = 1;
 		return 0;
 	}
 
 	if (strcmp(id, "~") == 0) {
+		free(id);
 		if (!starallowed) {
 			yyerror("~ not allowed in this type of rule");
 			return -1;
 		}
 		/* complement the set */
 		set->flags = TYPE_COMP;
-		free(id);
 		*add = 1;
 		return 0;
 	}
@@ -1570,8 +1658,10 @@ int define_compute_type_helper(int which, avrule_t ** rule)
 						(hashtab_key_t) id);
 	if (!datum || datum->flavor == TYPE_ATTRIB) {
 		yyerror2("unknown type %s", id);
+		free(id);
 		goto bad;
 	}
+	free(id);
 
 	ebitmap_for_each_bit(&tclasses, node, i) {
 		if (ebitmap_node_get_bit(node, i)) {
@@ -1704,11 +1794,11 @@ int define_bool_tunable(int is_tunable)
 	bool_value = (char *)queue_remove(id_queue);
 	if (!bool_value) {
 		yyerror("no default value for bool definition?");
-		free(id);
 		return -1;
 	}
 
 	datum->state = (int)(bool_value[0] == 'T') ? 1 : 0;
+	free(bool_value);
 	return 0;
       cleanup:
 	cond_destroy_bool(id, datum, NULL);
@@ -1917,11 +2007,11 @@ int avrule_ioctl_ranges(struct av_ioctl_range_list **rangelist)
 	/* read in ranges to include and omit */
 	if (avrule_read_ioctls(&rangehead))
 		return -1;
-	omit = rangehead->omit;
 	if (rangehead == NULL) {
 		yyerror("error processing ioctl commands");
 		return -1;
 	}
+	omit = rangehead->omit;
 	/* sort and merge the input ioctls */
 	if (avrule_sort_ioctls(&rangehead))
 		return -1;
@@ -2389,11 +2479,12 @@ int define_te_avtab_extended_perms(int which)
 
 	id = queue_remove(id_queue);
 	if (strcmp(id,"ioctl") == 0) {
+		free(id);
 		if (define_te_avtab_ioctl(avrule_template))
 			return -1;
-		free(id);
 	} else {
 		yyerror("only ioctl extended permissions are supported");
+		free(id);
 		return -1;
 	}
 	return 0;
@@ -2545,6 +2636,10 @@ int define_te_avtab_helper(int which, avrule_t ** rule)
 	*rule = avrule;
 
       out:
+	if (ret) {
+		avrule_destroy(avrule);
+		free(avrule);
+	}
 	return ret;
 
 }
@@ -2726,6 +2821,7 @@ int define_roleattribute(void)
 		free(id);
 		return -1;
 	}
+	free(id);
 
 	while ((id = queue_remove(id_queue))) {
 		if (!is_id_in_scope(SYM_ROLES, id)) {
@@ -3090,13 +3186,16 @@ int define_role_trans(int class_specified)
 	role = hashtab_search(policydbp->p_roles.table, id);
 	if (!role) {
 		yyerror2("unknown role %s used in transition definition", id);
+		free(id);
 		goto bad;
 	}
 
 	if (role->flavor != ROLE_ROLE) {
 		yyerror2("the new role %s must be a regular role", id);
+		free(id);
 		goto bad;
 	}
+	free(id);
 
 	/* This ebitmap business is just to ensure that there are not conflicting role_trans rules */
 	if (role_set_expand(&roles, &e_roles, policydbp, NULL, NULL))
@@ -3246,22 +3345,24 @@ int define_filename_trans(void)
 		return 0;
 	}
 
+	type_set_init(&stypes);
+	type_set_init(&ttypes);
+	ebitmap_init(&e_stypes);
+	ebitmap_init(&e_ttypes);
+	ebitmap_init(&e_tclasses);
 
 	add = 1;
-	type_set_init(&stypes);
 	while ((id = queue_remove(id_queue))) {
 		if (set_types(&stypes, id, &add, 0))
 			goto bad;
 	}
 
 	add =1;
-	type_set_init(&ttypes);
 	while ((id = queue_remove(id_queue))) {
 		if (set_types(&ttypes, id, &add, 0))
 			goto bad;
 	}
 
-	ebitmap_init(&e_tclasses);
 	if (read_classes(&e_tclasses))
 		goto bad;
 
@@ -3278,6 +3379,7 @@ int define_filename_trans(void)
 	typdatum = hashtab_search(policydbp->p_types.table, id);
 	if (!typdatum) {
 		yyerror2("unknown type %s used in transition definition", id);
+		free(id);
 		goto bad;
 	}
 	free(id);
@@ -3292,11 +3394,9 @@ int define_filename_trans(void)
 	/* We expand the class set into seperate rules.  We expand the types
 	 * just to make sure there are not duplicates.  They will get turned
 	 * into seperate rules later */
-	ebitmap_init(&e_stypes);
 	if (type_set_expand(&stypes, &e_stypes, policydbp, 1))
 		goto bad;
 
-	ebitmap_init(&e_ttypes);
 	if (type_set_expand(&ttypes, &e_ttypes, policydbp, 1))
 		goto bad;
 
@@ -3376,11 +3476,18 @@ int define_filename_trans(void)
 	ebitmap_destroy(&e_stypes);
 	ebitmap_destroy(&e_ttypes);
 	ebitmap_destroy(&e_tclasses);
+	type_set_destroy(&stypes);
+	type_set_destroy(&ttypes);
 
 	return 0;
 
 bad:
 	free(name);
+	ebitmap_destroy(&e_stypes);
+	ebitmap_destroy(&e_ttypes);
+	ebitmap_destroy(&e_tclasses);
+	type_set_destroy(&stypes);
+	type_set_destroy(&ttypes);
 	return -1;
 }
 
@@ -4899,8 +5006,7 @@ int define_port_context(unsigned int low, unsigned int high)
 		protocol = IPPROTO_DCCP;
 	} else {
 		yyerror2("unrecognized protocol %s", id);
-		free(newc);
-		return -1;
+		goto bad;
 	}
 
 	newc->u.port.protocol = protocol;
@@ -4909,13 +5015,11 @@ int define_port_context(unsigned int low, unsigned int high)
 
 	if (low > high) {
 		yyerror2("low port %d exceeds high port %d", low, high);
-		free(newc);
-		return -1;
+		goto bad;
 	}
 
 	if (parse_security_context(&newc->context[0])) {
-		free(newc);
-		return -1;
+		goto bad;
 	}
 
 	/* Preserve the matching order specified in the configuration. */
@@ -4945,11 +5049,199 @@ int define_port_context(unsigned int low, unsigned int high)
 	else
 		policydbp->ocontexts[OCON_PORT] = newc;
 
+	free(id);
 	return 0;
 
       bad:
+	free(id);
 	free(newc);
 	return -1;
+}
+
+int define_ibpkey_context(unsigned int low, unsigned int high)
+{
+	ocontext_t *newc, *c, *l, *head;
+	struct in6_addr subnet_prefix;
+	char *id;
+	int rc = 0;
+
+	if (policydbp->target_platform != SEPOL_TARGET_SELINUX) {
+		yyerror("ibpkeycon not supported for target");
+		return -1;
+	}
+
+	if (pass == 1) {
+		id = (char *)queue_remove(id_queue);
+		free(id);
+		parse_security_context(NULL);
+		return 0;
+	}
+
+	newc = malloc(sizeof(*newc));
+	if (!newc) {
+		yyerror("out of memory");
+		return -1;
+	}
+	memset(newc, 0, sizeof(*newc));
+
+	id = queue_remove(id_queue);
+	if (!id) {
+		yyerror("failed to read the subnet prefix");
+		rc = -1;
+		goto out;
+	}
+
+	rc = inet_pton(AF_INET6, id, &subnet_prefix);
+	free(id);
+	if (rc < 1) {
+		yyerror("failed to parse the subnet prefix");
+		if (rc == 0)
+			rc = -1;
+		goto out;
+	}
+
+	if (subnet_prefix.s6_addr[2] || subnet_prefix.s6_addr[3]) {
+		yyerror("subnet prefix should be 0's in the low order 64 bits.");
+		rc = -1;
+		goto out;
+	}
+
+	if (low > 0xffff || high > 0xffff) {
+		yyerror("pkey value too large, pkeys are 16 bits.");
+		rc = -1;
+		goto out;
+	}
+
+	memcpy(&newc->u.ibpkey.subnet_prefix, &subnet_prefix.s6_addr[0],
+	       sizeof(newc->u.ibpkey.subnet_prefix));
+
+	newc->u.ibpkey.low_pkey = low;
+	newc->u.ibpkey.high_pkey = high;
+
+	if (low > high) {
+		yyerror2("low pkey %d exceeds high pkey %d", low, high);
+		rc = -1;
+		goto out;
+	}
+
+	rc = parse_security_context(&newc->context[0]);
+	if (rc)
+		goto out;
+
+	/* Preserve the matching order specified in the configuration. */
+	head = policydbp->ocontexts[OCON_IBPKEY];
+	for (l = NULL, c = head; c; l = c, c = c->next) {
+		unsigned int low2, high2;
+
+		low2 = c->u.ibpkey.low_pkey;
+		high2 = c->u.ibpkey.high_pkey;
+
+		if (low == low2 && high == high2 &&
+		    c->u.ibpkey.subnet_prefix == newc->u.ibpkey.subnet_prefix) {
+			yyerror2("duplicate ibpkeycon entry for %d-%d ",
+				 low, high);
+			rc = -1;
+			goto out;
+		}
+		if (low2 <= low && high2 >= high &&
+		    c->u.ibpkey.subnet_prefix == newc->u.ibpkey.subnet_prefix) {
+			yyerror2("ibpkeycon entry for %d-%d hidden by earlier entry for %d-%d",
+				 low, high, low2, high2);
+			rc = -1;
+			goto out;
+		}
+	}
+
+	if (l)
+		l->next = newc;
+	else
+		policydbp->ocontexts[OCON_IBPKEY] = newc;
+
+	return 0;
+
+out:
+	free(newc);
+	return rc;
+}
+
+int define_ibendport_context(unsigned int port)
+{
+	ocontext_t *newc, *c, *l, *head;
+	char *id;
+	int rc = 0;
+
+	if (policydbp->target_platform != SEPOL_TARGET_SELINUX) {
+		yyerror("ibendportcon not supported for target");
+		return -1;
+	}
+
+	if (pass == 1) {
+		id = (char *)queue_remove(id_queue);
+		free(id);
+		parse_security_context(NULL);
+		return 0;
+	}
+
+	if (port > 0xff || port == 0) {
+		yyerror("Invalid ibendport port number, should be 0 < port < 256");
+		return -1;
+	}
+
+	newc = malloc(sizeof(*newc));
+	if (!newc) {
+		yyerror("out of memory");
+		return -1;
+	}
+	memset(newc, 0, sizeof(*newc));
+
+	newc->u.ibendport.dev_name = queue_remove(id_queue);
+	if (!newc->u.ibendport.dev_name) {
+		yyerror("failed to read infiniband device name.");
+		rc = -1;
+		goto out;
+	}
+
+	if (strlen(newc->u.ibendport.dev_name) > IB_DEVICE_NAME_MAX - 1) {
+		yyerror("infiniband device name exceeds max length of 63.");
+		rc = -1;
+		goto out;
+	}
+
+	newc->u.ibendport.port = port;
+
+	if (parse_security_context(&newc->context[0])) {
+		free(newc);
+		return -1;
+	}
+
+	/* Preserve the matching order specified in the configuration. */
+	head = policydbp->ocontexts[OCON_IBENDPORT];
+	for (l = NULL, c = head; c; l = c, c = c->next) {
+		unsigned int port2;
+
+		port2 = c->u.ibendport.port;
+
+		if (port == port2 &&
+		    !strcmp(c->u.ibendport.dev_name,
+			     newc->u.ibendport.dev_name)) {
+			yyerror2("duplicate ibendportcon entry for %s port %u",
+				 newc->u.ibendport.dev_name, port);
+			rc = -1;
+			goto out;
+		}
+	}
+
+	if (l)
+		l->next = newc;
+	else
+		policydbp->ocontexts[OCON_IBENDPORT] = newc;
+
+	return 0;
+
+out:
+	free(newc->u.ibendport.dev_name);
+	free(newc);
+	return rc;
 }
 
 int define_netif_context(void)
@@ -5155,14 +5447,8 @@ int define_ipv6_node_context(void)
 	}
 
 	memset(newc, 0, sizeof(ocontext_t));
-
-#ifdef __APPLE__
 	memcpy(&newc->u.node6.addr[0], &addr.s6_addr[0], 16);
 	memcpy(&newc->u.node6.mask[0], &mask.s6_addr[0], 16);
-#else
-	memcpy(&newc->u.node6.addr[0], &addr.s6_addr32[0], 16);
-	memcpy(&newc->u.node6.mask[0], &mask.s6_addr32[0], 16);
-#endif
 
 	if (parse_security_context(&newc->context[0])) {
 		free(newc);
@@ -5283,6 +5569,9 @@ int define_genfs_context_helper(char *fstype, int has_type)
 		else
 			policydbp->genfs = newgenfs;
 		genfs = newgenfs;
+	} else {
+		free(fstype);
+		fstype = NULL;
 	}
 
 	newc = (ocontext_t *) malloc(sizeof(ocontext_t));
@@ -5340,7 +5629,7 @@ int define_genfs_context_helper(char *fstype, int has_type)
 		    (!newc->v.sclass || !c->v.sclass
 		     || newc->v.sclass == c->v.sclass)) {
 			yyerror2("duplicate entry for genfs entry (%s, %s)",
-				 fstype, newc->u.name);
+				 genfs->fstype, newc->u.name);
 			goto fail;
 		}
 		len = strlen(newc->u.name);
@@ -5354,6 +5643,7 @@ int define_genfs_context_helper(char *fstype, int has_type)
 		p->next = newc;
 	else
 		genfs->head = newc;
+	free(type);
 	return 0;
       fail:
 	if (type)

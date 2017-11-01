@@ -17,9 +17,15 @@ extern struct selabel_handle* selinux_android_prop_context_handle(void);
 
 extern struct selabel_handle* selinux_android_service_context_handle(void);
 
+extern struct selabel_handle* selinux_android_hw_service_context_handle(void);
+
+extern struct selabel_handle* selinux_android_vendor_service_context_handle(void);
+
 extern void selinux_android_set_sehandle(const struct selabel_handle *hndl);
 
 extern int selinux_android_load_policy(void);
+
+extern int selinux_android_load_policy_from_fd(int fd, const char *description);
 
 extern int selinux_android_setcon(const char *con);
 

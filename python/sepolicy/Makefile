@@ -2,17 +2,15 @@ PYTHON ?= python
 
 # Installation directories.
 PREFIX ?= $(DESTDIR)/usr
-SYSCONFDIR ?= $(DESTDIR)/etc/sysconfig
 LIBDIR ?= $(PREFIX)/lib
 BINDIR ?= $(PREFIX)/bin
-SBINDIR ?= $(PREFIX)/sbin
 DATADIR ?= $(PREFIX)/share
 MANDIR ?= $(PREFIX)/share/man
 LOCALEDIR ?= /usr/share/locale
 BASHCOMPLETIONDIR ?= $(DESTDIR)/usr/share/bash-completion/completions
 SHAREDIR ?= $(PREFIX)/share/sandbox
 CFLAGS ?= -Wall -Werror -Wextra -W
-override CFLAGS += -I$(PREFIX)/include -DPACKAGE="policycoreutils" -DSHARED -shared
+override CFLAGS += -DPACKAGE="policycoreutils" -DSHARED -shared
 
 BASHCOMPLETIONS=sepolicy-bash-completion.sh
 

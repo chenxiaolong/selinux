@@ -30,7 +30,7 @@ enum plat_flavor {
 	PLAT_ATTRIB
 };
 
-static unsigned int ver_map_hash_val(hashtab_t h, const hashtab_key_t key)
+static unsigned int ver_map_hash_val(hashtab_t h, const_hashtab_key_t key)
 {
 	/* from cil_stpool.c */
 	char *p, *keyp;
@@ -48,10 +48,10 @@ static unsigned int ver_map_hash_val(hashtab_t h, const hashtab_key_t key)
 
 
 static int ver_map_key_cmp(hashtab_t h __attribute__ ((unused)),
-			   const hashtab_key_t key1, const hashtab_key_t key2)
+			   const_hashtab_key_t key1, const_hashtab_key_t key2)
 {
-	/* hashtab_key_t is just a char* underneath */
-	return strcmp((char *)key1, (char *)key2);
+	/* hashtab_key_t is just a const char* underneath */
+	return strcmp(key1, key2);
 }
 
 /*
@@ -100,6 +100,7 @@ static int __extract_attributees_helper(struct cil_tree_node *node, uint32_t *fi
 			   of the existing types and attributes.  These may be differnt in
 			   every checkpolicy output, ignore them here, they'll be dealt with
 			   as a special case when attributizing. */
+			free(datum);
 		} else {
 			rc = hashtab_insert(args->vers_map, (hashtab_key_t) key, (hashtab_datum_t) datum);
 			if (rc != SEPOL_OK) {
@@ -199,23 +200,27 @@ static char *__cil_attrib_get_versname(char *old, const char *vers)
 
 /*
  * Change type to attribute - create new versioned name based on old, create
- * typeattribute node and replace existing type node.
+ * typeattribute node add to the existing type node.
  */
 static int __cil_attrib_convert_type(struct cil_tree_node *node, struct version_args *args)
 {
 	int rc = SEPOL_ERR;
 	struct cil_type *type = (struct cil_type *)node->data;
 	struct cil_typeattribute *typeattr = NULL;
+	struct cil_tree_node *new_ast_node = NULL;
 	char *new_key;
 
 	cil_typeattribute_init(&typeattr);
 
 	new_key = __cil_attrib_get_versname(type->datum.name, args->num);
 
-	cil_symtab_datum_remove_node(&type->datum, node);
-	cil_destroy_type(type);
+	/* create new tree node to contain typeattribute and add to tree */
+	cil_tree_node_init(&new_ast_node);
+	new_ast_node->parent = node->parent;
+	new_ast_node->next = node->next;
+	node->next = new_ast_node;
 
-	rc = cil_gen_node(args->db, node, (struct cil_symtab_datum *) typeattr,
+	rc = cil_gen_node(args->db, new_ast_node, (struct cil_symtab_datum *) typeattr,
 			  new_key, CIL_SYM_TYPES, CIL_TYPEATTRIBUTE);
 	if (rc != SEPOL_OK) {
 		goto exit;
@@ -392,27 +397,17 @@ exit:
 	return rc;
 }
 
-static int cil_attrib_typepermissive(struct cil_tree_node *node, struct version_args *args)
+static int cil_attrib_typepermissive(struct cil_tree_node *node,
+				     struct version_args *args __attribute__ ((unused)))
 {
-	int rc = SEPOL_ERR;
-	char *key;
 	struct cil_typepermissive *typeperm = (struct cil_typepermissive *)node->data;
 
 	if (typeperm->type != NULL) {
 		cil_log(CIL_ERR, "AST already resolved.  ### Not yet supported.\n");
-		goto exit;
-	}
-
-	key = typeperm->type_str;
-	if (__cil_get_plat_flavor(args->vers_map, (hashtab_key_t) key) != PLAT_NONE) {
-		cil_log(CIL_ERR, "%s contains platform public type: %s (line %d) .\n",
-			CIL_KEY_TYPEPERMISSIVE, typeperm->type_str, node->line);
-		goto exit;
+		return SEPOL_ERR;
 	}
 
 	return SEPOL_OK;
-exit:
-	return rc;
 }
 
 static int cil_attrib_typeattribute(struct cil_tree_node *node, struct version_args *args)
@@ -431,11 +426,6 @@ static int cil_attrib_typeattribute(struct cil_tree_node *node, struct version_a
 		if (rc != SEPOL_OK) {
 			goto exit;
 		}
-	} else if (__cil_get_plat_flavor(args->vers_map, key) == PLAT_ATTRIB) {
-		// platform attribute declaration to be provided by platform policy
-		cil_symtab_datum_remove_node(&typeattr->datum, node);
-		cil_destroy_typeattribute(typeattr);
-		node->flavor = CIL_NONE; // traversal relies on this node sticking around, empty it.
 	}
 
 	return SEPOL_OK;
@@ -654,8 +644,6 @@ static int __attributize_helper(struct cil_tree_node *node, uint32_t *finished, 
 		}
 		break;
 	case CIL_TYPEPERMISSIVE:
-		/* not sure how to handle this - throw error if targeting platform type.
-		   Could maybe add support for permissive attributes. */
 		rc = cil_attrib_typepermissive(node, args);
 		if (rc != SEPOL_OK) {
 			goto exit;
@@ -791,11 +779,14 @@ exit:
 static int cil_build_mappings_tree(hashtab_key_t k, hashtab_datum_t d, void *args)
 {
 	struct cil_typeattributeset *attrset = NULL;
+	struct cil_typeattribute *typeattr = NULL;
+	struct cil_expandtypeattribute *expandattr = NULL;
 	struct cil_tree_node *ast_node = NULL;
 	struct version_args *verargs = (struct version_args *)args;
 	struct cil_tree_node *ast_parent = verargs->db->ast->root;
 	char *orig_type = (char *) k;
 	struct version_datum *vers_datum = (struct version_datum *) d;
+	char *new_key = __cil_attrib_get_versname(orig_type, verargs->num);
 
 	if (vers_datum->ast_node->flavor == CIL_TYPEATTRIBUTE) {
 		// platform attributes are not versioned
@@ -804,7 +795,7 @@ static int cil_build_mappings_tree(hashtab_key_t k, hashtab_datum_t d, void *arg
 	/* create typeattributeset datum */
 	cil_typeattributeset_init(&attrset);
 	cil_list_init(&attrset->str_expr, CIL_TYPE);
-	attrset->attr_str = __cil_attrib_get_versname(orig_type, verargs->num);
+	attrset->attr_str = new_key;
 	cil_list_append(attrset->str_expr, CIL_STRING, orig_type);
 
 	/* create containing tree node */
@@ -819,6 +810,32 @@ static int cil_build_mappings_tree(hashtab_key_t k, hashtab_datum_t d, void *arg
 	else
 		ast_parent->cl_tail->next = ast_node;
 	ast_parent->cl_tail = ast_node;
+
+	/* create expandtypeattribute datum */
+	cil_expandtypeattribute_init(&expandattr);
+	cil_list_init(&expandattr->attr_strs, CIL_TYPE);
+	cil_list_append(expandattr->attr_strs, CIL_STRING, new_key);
+	expandattr->expand = CIL_TRUE;
+
+	/* create containing tree node */
+	cil_tree_node_init(&ast_node);
+	ast_node->data = expandattr;
+	ast_node->flavor = CIL_EXPANDTYPEATTRIBUTE;
+	/* add to tree */
+	ast_node->parent = ast_parent;
+	ast_parent->cl_tail->next = ast_node;
+	ast_parent->cl_tail = ast_node;
+
+	/* re)declare typeattribute. */
+	cil_typeattribute_init(&typeattr);
+	typeattr->datum.name = new_key;
+	cil_tree_node_init(&ast_node);
+	ast_node->data = typeattr;
+	ast_node->flavor = CIL_TYPEATTRIBUTE;
+	ast_node->parent = ast_parent;
+	ast_parent->cl_tail->next = ast_node;
+	ast_parent->cl_tail = ast_node;
+
 	return SEPOL_OK;
 }
 

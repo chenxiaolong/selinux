@@ -1,5 +1,5 @@
 
-/* Author : Stephen Smalley, <sds@epoch.ncsc.mil> */
+/* Author : Stephen Smalley, <sds@tycho.nsa.gov> */
 
 /* FLASK */
 
@@ -113,6 +113,7 @@ void queue_destroy(queue_t q)
 
 	p = q->head;
 	while (p != NULL) {
+		free(p->element);
 		temp = p;
 		p = p->next;
 		free(temp);

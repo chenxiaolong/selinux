@@ -1,6 +1,6 @@
 
 /* 
- * Author : Stephen Smalley, <sds@epoch.ncsc.mil> 
+ * Author : Stephen Smalley, <sds@tycho.nsa.gov>
  */
 
 /* Updated: David Caplan, <dac@tresys.com>
@@ -12,6 +12,7 @@
  *	Added support for binary policy modules
  *
  * Copyright (C) 2003-5 Tresys Technology, LLC
+ * Copyright (C) 2017 Mellanox Technologies Inc.
  *	This program is free software; you can redistribute it and/or modify
  *  	it under the terms of the GNU General Public License as published by
  *	the Free Software Foundation, version 2.
@@ -106,6 +107,8 @@ ALIAS |
 alias				{ return(ALIAS); }
 ATTRIBUTE |
 attribute			{ return(ATTRIBUTE); }
+EXPANDATTRIBUTE |
+expandattribute                 { return(EXPANDATTRIBUTE); }
 TYPE_TRANSITION |
 type_transition			{ return(TYPE_TRANSITION); }
 TYPE_MEMBER |
@@ -181,6 +184,10 @@ INCOMP |
 incomp				{ return(INCOMP);}
 fscon |
 FSCON                           { return(FSCON);}
+ibpkeycon |
+IBPKEYCON			{ return(IBPKEYCON);}
+ibendportcon |
+IBENDPORTCON			{ return(IBENDPORTCON);}
 portcon |
 PORTCON				{ return(PORTCON);}
 netifcon |                     

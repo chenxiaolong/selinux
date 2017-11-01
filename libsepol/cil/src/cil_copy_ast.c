@@ -648,6 +648,29 @@ int cil_copy_typeattributeset(struct cil_db *db, void *data, void **copy, __attr
 	return SEPOL_OK;
 }
 
+int cil_copy_expandtypeattribute(__attribute__((unused)) struct cil_db *db, void *data, void **copy, __attribute__((unused)) symtab_t *symtab)
+{
+	struct cil_expandtypeattribute *orig = data;
+	struct cil_expandtypeattribute *new = NULL;
+
+	fprintf(stderr, "%s %u\n", __func__, __LINE__);
+	cil_expandtypeattribute_init(&new);
+
+	if (orig->attr_strs != NULL) {
+		cil_copy_list(orig->attr_strs, &new->attr_strs);
+	}
+
+	if (orig->attr_datums != NULL) {
+		cil_copy_list(orig->attr_datums, &new->attr_datums);
+	}
+
+	new->expand = orig->expand;
+
+	*copy = new;
+
+	return SEPOL_OK;
+}
+
 int cil_copy_alias(__attribute__((unused)) struct cil_db *db, void *data, void **copy, symtab_t *symtab)
 {
 	struct cil_alias *orig = data;
@@ -1170,6 +1193,51 @@ int cil_copy_nodecon(struct cil_db *db, void *data, void **copy, __attribute__((
 	}
 
 	if (orig->context_str != NULL) {
+		new->context_str = orig->context_str;
+	} else {
+		cil_context_init(&new->context);
+		cil_copy_fill_context(db, orig->context, new->context);
+	}
+
+	*copy = new;
+
+	return SEPOL_OK;
+}
+
+int cil_copy_ibpkeycon(struct cil_db *db, void *data, void **copy, __attribute__((unused)) symtab_t *symtab)
+{
+	struct cil_ibpkeycon *orig = data;
+	struct cil_ibpkeycon *new = NULL;
+
+	cil_ibpkeycon_init(&new);
+
+	new->subnet_prefix_str = orig->subnet_prefix_str;
+	new->pkey_low = orig->pkey_low;
+	new->pkey_high = orig->pkey_high;
+
+	if (orig->context_str) {
+		new->context_str = orig->context_str;
+	} else {
+		cil_context_init(&new->context);
+		cil_copy_fill_context(db, orig->context, new->context);
+	}
+
+	*copy = new;
+
+	return SEPOL_OK;
+}
+
+int cil_copy_ibendportcon(struct cil_db *db, void *data, void **copy, __attribute__((unused)) symtab_t *symtab)
+{
+	struct cil_ibendportcon *orig = data;
+	struct cil_ibendportcon *new = NULL;
+
+	cil_ibendportcon_init(&new);
+
+	new->dev_name_str = orig->dev_name_str;
+	new->port = orig->port;
+
+	if (orig->context_str) {
 		new->context_str = orig->context_str;
 	} else {
 		cil_context_init(&new->context);
@@ -1808,6 +1876,9 @@ int __cil_copy_node_helper(struct cil_tree_node *orig, __attribute__((unused)) u
 	case CIL_TYPEATTRIBUTESET:
 		copy_func = &cil_copy_typeattributeset;
 		break;
+	case CIL_EXPANDTYPEATTRIBUTE:
+		copy_func = &cil_copy_expandtypeattribute;
+		break;
 	case CIL_TYPEALIAS:
 		copy_func = &cil_copy_alias;
 		break;
@@ -1889,6 +1960,12 @@ int __cil_copy_node_helper(struct cil_tree_node *orig, __attribute__((unused)) u
 		break;
 	case CIL_NODECON:
 		copy_func = &cil_copy_nodecon;
+		break;
+	case CIL_IBPKEYCON:
+		copy_func = &cil_copy_ibpkeycon;
+		break;
+	case CIL_IBENDPORTCON:
+		copy_func = &cil_copy_ibendportcon;
 		break;
 	case CIL_PORTCON:
 		copy_func = &cil_copy_portcon;
@@ -1987,6 +2064,14 @@ int __cil_copy_node_helper(struct cil_tree_node *orig, __attribute__((unused)) u
 		new->data = data;
 
 		if (orig->flavor >= CIL_MIN_DECLARATIVE) {
+			/* Check the flavor of data if was found in the destination symtab */
+			if (DATUM(data)->nodes->head && FLAVOR(data) != orig->flavor) {
+				cil_tree_log(orig, CIL_ERR, "Incompatible flavor when trying to copy %s", DATUM(data)->name);
+				cil_tree_log(NODE(data), CIL_ERR, "Note: conflicting declaration");
+				new->flavor = FLAVOR(data);
+				rc = SEPOL_ERR;
+				goto exit;
+			}
 			rc = cil_symtab_insert(symtab, ((struct cil_symtab_datum*)orig->data)->name, ((struct cil_symtab_datum*)data), new);
 
 			namespace = new;

@@ -1,27 +1,22 @@
+PREFIX ?= $(DESTDIR)/usr
+LIBDIR ?= $(PREFIX)/lib
+
 # Add your test source files here:
-SOURCES = $(wildcard *.c)
-
-# Point this variable to the libsemanage source directory you want to test:
-TESTSRC=../src
-
-# Add the required external object files here:
-LIBS = ../src/libsemanage.a ../../libselinux/src/libselinux.a ../../libsepol/src/libsepol.a
+SOURCES = $(sort $(wildcard *.c))
 
 ###########################################################################
 
 EXECUTABLE = libsemanage-tests
 CFLAGS += -g -O0 -Wall -W -Wundef -Wmissing-noreturn -Wmissing-format-attribute -Wno-unused-parameter
-INCLUDE = -I$(TESTSRC) -I$(TESTSRC)/../include
-LDFLAGS += -lcunit -lustr -lbz2 -laudit
+override CFLAGS += -I../src -I../include
+override LDLIBS += -lcunit -lbz2 -laudit -lselinux -lsepol
+
 OBJECTS = $(SOURCES:.c=.o) 
 
 all: $(EXECUTABLE) 
 
-$(EXECUTABLE): $(OBJECTS) 
-	$(CC) $(OBJECTS) $(LIBS) $(LDFLAGS) -o $@
-
-%.o: %.c
-	$(CC) $(CFLAGS) $(INCLUDE) -c $*.c -o $*.o
+$(EXECUTABLE): $(OBJECTS) ../src/libsemanage.a
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 clean distclean: 
 	rm -rf $(OBJECTS) $(EXECUTABLE)

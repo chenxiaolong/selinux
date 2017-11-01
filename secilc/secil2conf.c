@@ -41,7 +41,7 @@
 #endif
 #include <sepol/policydb.h>
 
-void usage(char *prog)
+static __attribute__((__noreturn__)) void usage(const char *prog)
 {
 	printf("Usage: %s [OPTION]... FILE...\n", prog);
 	printf("\n");
@@ -124,6 +124,8 @@ int main(int argc, char *argv[])
 	cil_db_init(&db);
 	cil_set_preserve_tunables(db, preserve_tunables);
 	cil_set_mls(db, mls);
+	cil_set_attrs_expand_generated(db, 0);
+	cil_set_attrs_expand_size(db, 0);
 
 	for (i = optind; i < argc; i++) {
 		file = fopen(argv[i], "r");
