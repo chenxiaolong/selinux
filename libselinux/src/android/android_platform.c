@@ -86,6 +86,12 @@ static bool compute_file_contexts_hash(uint8_t c_digest[], const struct selinux_
             goto cleanup;
         }
 
+        if (sb.st_size == 0) {
+            selinux_log(SELINUX_WARNING, "SELinux:  Skipping %s:  empty file\n",
+                    opts[i].value);
+            goto nextfile;
+        }
+
         map = mmap(NULL, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
         if (map == MAP_FAILED) {
             selinux_log(SELINUX_ERROR, "SELinux:  Could not map %s:  %s\n",
@@ -105,6 +111,7 @@ static bool compute_file_contexts_hash(uint8_t c_digest[], const struct selinux_
 
         /* reset everything for next file */
         munmap(map, sb.st_size);
+nextfile:
         close(fd);
         map = MAP_FAILED;
         fd = -1;
@@ -147,11 +154,6 @@ static struct selabel_handle* selinux_android_file_context(const struct selinux_
     selinux_log(SELINUX_INFO, "SELinux: Loaded file_contexts\n");
 
     return sehandle;
-}
-
-static bool selinux_android_opts_file_exists(const struct selinux_opt *opt)
-{
-    return (access(opt[0].value, R_OK) != -1);
 }
 
 struct selabel_handle* selinux_android_file_context_handle(void)
@@ -449,7 +451,7 @@ int selinux_android_seapp_context_reload(void)
 	struct seapp_context *cur;
 	char *p, *name = NULL, *value = NULL, *saveptr;
 	size_t i, len, files_len = 0;
-	int n, ret;
+	int ret;
 	const char* seapp_contexts_files[MAX_FILE_CONTEXT_SIZE];
 	for (i = 0; i < ARRAY_SIZE(seapp_contexts_plat); i++) {
 		if (access(seapp_contexts_plat[i], R_OK) != -1) {
@@ -854,7 +856,6 @@ static int seapp_context_lookup(enum seapp_kind kind,
 	const char *username = NULL;
 	struct seapp_context *cur = NULL;
 	int i;
-	size_t n;
 	uid_t userid;
 	uid_t appid;
 	bool isPrivApp = false;
@@ -1617,8 +1618,10 @@ static int selinux_android_restorecon_common(const char* pathname_orig,
     }
 
     // Labeling successful. Mark the top level directory as completed.
-    if (setrestoreconlast && !nochange && !error)
-        setxattr(pathname, RESTORECON_LAST, fc_digest, sizeof fc_digest, 0);
+    if (setrestoreconlast && !nochange && !error) {
+        if (setxattr(pathname, RESTORECON_LAST, fc_digest, sizeof fc_digest, 0) < 0)
+            selinux_log(SELINUX_ERROR, "SELinux:  setxattr failed: %s:  %s\n", pathname, strerror(errno));
+    }
 
 out:
     sverrno = errno;
