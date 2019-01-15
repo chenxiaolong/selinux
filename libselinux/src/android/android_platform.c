@@ -1,14 +1,18 @@
 #include "android_common.h"
 #include <packagelistparser/packagelistparser.h>
 
-// For 'system', 'vendor' (mandatory) and/or 'odm' (optional).
-#define MAX_FILE_CONTEXT_SIZE 3
+// For 'system', 'product' (optional), 'vendor' (mandatory) and/or 'odm' (optional).
+#define MAX_FILE_CONTEXT_SIZE 4
 
 static const char *const sepolicy_file = "/sepolicy";
 
 static const struct selinux_opt seopts_file_plat[] = {
     { SELABEL_OPT_PATH, "/system/etc/selinux/plat_file_contexts" },
     { SELABEL_OPT_PATH, "/plat_file_contexts" }
+};
+static const struct selinux_opt seopts_file_product[] = {
+    { SELABEL_OPT_PATH, "/product/etc/selinux/product_file_contexts" },
+    { SELABEL_OPT_PATH, "/product_file_contexts" }
 };
 static const struct selinux_opt seopts_file_vendor[] = {
     { SELABEL_OPT_PATH, "/vendor/etc/selinux/vendor_file_contexts" },
@@ -25,6 +29,10 @@ static const struct selinux_opt seopts_file_odm[] = {
 static const struct selinux_opt seopts_prop_plat[] = {
     { SELABEL_OPT_PATH, "/system/etc/selinux/plat_property_contexts" },
     { SELABEL_OPT_PATH, "/plat_property_contexts" }
+};
+static const struct selinux_opt seopts_prop_product[] = {
+    { SELABEL_OPT_PATH, "/product/etc/selinux/product_property_contexts" },
+    { SELABEL_OPT_PATH, "/product_property_contexts" }
 };
 static const struct selinux_opt seopts_prop_vendor[] = {
     { SELABEL_OPT_PATH, "/vendor/etc/selinux/vendor_property_contexts" },
@@ -47,6 +55,10 @@ static const struct selinux_opt seopts_prop_odm[] = {
 static char const * const seapp_contexts_plat[] = {
 	"/system/etc/selinux/plat_seapp_contexts",
 	"/plat_seapp_contexts"
+};
+static char const * const seapp_contexts_product[] = {
+	"/product/etc/selinux/product_seapp_contexts",
+	"/product_seapp_contexts"
 };
 static char const * const seapp_contexts_vendor[] = {
 	"/vendor/etc/selinux/vendor_seapp_contexts",
@@ -167,6 +179,12 @@ struct selabel_handle* selinux_android_file_context_handle(void)
             break;
         }
     }
+    for (i = 0; i < ARRAY_SIZE(seopts_file_product); i++) {
+        if (access(seopts_file_product[i].value, R_OK) != -1) {
+            seopts_file[size++] = seopts_file_product[i];
+            break;
+        }
+    }
     for (i = 0; i < ARRAY_SIZE(seopts_file_vendor); i++) {
         if (access(seopts_file_vendor[i].value, R_OK) != -1) {
             seopts_file[size++] = seopts_file_vendor[i];
@@ -191,6 +209,12 @@ struct selabel_handle* selinux_android_prop_context_handle(void)
     for (i = 0; i < ARRAY_SIZE(seopts_prop_plat); i++) {
         if (access(seopts_prop_plat[i].value, R_OK) != -1) {
             seopts_prop[size++] = seopts_prop_plat[i];
+            break;
+        }
+    }
+    for (i = 0; i < ARRAY_SIZE(seopts_prop_product); i++) {
+        if (access(seopts_prop_product[i].value, R_OK) != -1) {
+            seopts_prop[size++] = seopts_prop_product[i];
             break;
         }
     }
@@ -264,6 +288,7 @@ struct seapp_context {
 	bool isPrivAppSet;
 	bool isPrivApp;
 	int32_t minTargetSdkVersion;
+	bool fromRunAs;
 	/* outputs */
 	char *domain;
 	char *type;
@@ -379,6 +404,10 @@ static int seapp_context_cmp(const void *A, const void *B)
 	else if (s1->minTargetSdkVersion < s2->minTargetSdkVersion)
 		return 1;
 
+	/* Give precedence to fromRunAs=true. */
+	if (s1->fromRunAs != s2->fromRunAs)
+		return (s1->fromRunAs ? -1 : 1);
+
 	/*
 	 * Check for a duplicated entry on the input selectors.
 	 * We already compared isSystemServer, isOwnerSet, and isOwner above.
@@ -459,6 +488,12 @@ int selinux_android_seapp_context_reload(void)
 			break;
 		}
 	}
+	for (i = 0; i < ARRAY_SIZE(seapp_contexts_product); i++) {
+		if (access(seapp_contexts_product[i], R_OK) != -1) {
+			seapp_contexts_files[files_len++] = seapp_contexts_product[i];
+			break;
+		}
+	}
 	for (i = 0; i < ARRAY_SIZE(seapp_contexts_vendor); i++) {
 		if (access(seapp_contexts_vendor[i], R_OK) != -1) {
 			seapp_contexts_files[files_len++] = seapp_contexts_vendor[i];
@@ -509,6 +544,10 @@ int selinux_android_seapp_context_reload(void)
 		}
 		while (fgets(line_buf, sizeof line_buf - 1, fp)) {
 			len = strlen(line_buf);
+			if (len == 0) {
+				// line contains a NUL byte as its first entry
+				goto err;
+			}
 			if (line_buf[len - 1] == '\n')
 				line_buf[len - 1] = 0;
 			p = line_buf;
@@ -704,6 +743,15 @@ int selinux_android_seapp_context_reload(void)
 						free_seapp_context(cur);
 						goto err;
 					}
+				} else if (!strcasecmp(name, "fromRunAs")) {
+					if (!strcasecmp(value, "true"))
+						cur->fromRunAs = true;
+					else if (!strcasecmp(value, "false"))
+						cur->fromRunAs = false;
+					else {
+						free_seapp_context(cur);
+						goto err;
+					}
 				} else {
 					free_seapp_context(cur);
 					goto err;
@@ -742,7 +790,7 @@ int selinux_android_seapp_context_reload(void)
 		for (i = 0; i < nspec; i++) {
 			cur = seapp_contexts[i];
 			selinux_log(SELINUX_INFO, "%s:  isSystemServer=%s  isEphemeralApp=%s isV2App=%s isOwner=%s user=%s seinfo=%s "
-					"name=%s path=%s isPrivApp=%s minTargetSdkVersion=%d -> domain=%s type=%s level=%s levelFrom=%s",
+					"name=%s path=%s isPrivApp=%s minTargetSdkVersion=%d fromRunAs=%s -> domain=%s type=%s level=%s levelFrom=%s",
 				__FUNCTION__,
 				cur->isSystemServer ? "true" : "false",
 				cur->isEphemeralAppSet ? (cur->isEphemeralApp ? "true" : "false") : "null",
@@ -752,6 +800,7 @@ int selinux_android_seapp_context_reload(void)
 				cur->seinfo, cur->name.str, cur->path.str,
 				cur->isPrivAppSet ? (cur->isPrivApp ? "true" : "false") : "null",
 				cur->minTargetSdkVersion,
+				cur->fromRunAs ? "true" : "false",
 				cur->domain, cur->type, cur->level,
 				levelFromName[cur->levelFrom]);
 		}
@@ -804,6 +853,7 @@ enum seapp_kind {
 #define EPHEMERAL_APP_STR ":ephemeralapp"
 #define V2_APP_STR ":v2"
 #define TARGETSDKVERSION_STR ":targetSdkVersion="
+#define FROM_RUNAS_STR ":fromRunAs"
 static int32_t get_app_targetSdkVersion(const char *seinfo)
 {
 	char *substr = strstr(seinfo, TARGETSDKVERSION_STR);
@@ -862,6 +912,7 @@ static int seapp_context_lookup(enum seapp_kind kind,
 	bool isEphemeralApp = false;
 	int32_t targetSdkVersion = 0;
 	bool isV2App = false;
+	bool fromRunAs = false;
 	char parsedseinfo[BUFSIZ];
 
 	__selinux_once(once, seapp_context_init);
@@ -872,6 +923,7 @@ static int seapp_context_lookup(enum seapp_kind kind,
 		isPrivApp = strstr(seinfo, PRIVILEGED_APP_STR) ? true : false;
 		isEphemeralApp = strstr(seinfo, EPHEMERAL_APP_STR) ? true : false;
 		isV2App = strstr(seinfo, V2_APP_STR) ? true : false;
+		fromRunAs = strstr(seinfo, FROM_RUNAS_STR) ? true : false;
 		targetSdkVersion = get_app_targetSdkVersion(seinfo);
 		if (targetSdkVersion < 0) {
 			selinux_log(SELINUX_ERROR,
@@ -957,6 +1009,9 @@ static int seapp_context_lookup(enum seapp_kind kind,
 			continue;
 
 		if (cur->minTargetSdkVersion > targetSdkVersion)
+			continue;
+
+		if (cur->fromRunAs != fromRunAs)
 			continue;
 
 		if (cur->path.str) {
